@@ -59,9 +59,9 @@ export async function getSlotInfo(slotId: string): Promise<SlotInfo> {
     slot_label: slot.label as string,
     submit_url: (slot.submit_url as string | null) ?? null,
     account_id: slot.account_id as string,
-    account_label: acc.label,
-    email: acc.email,
-    login_url: acc.login_url,
+    account_label: account.label,
+    email: account.email,
+    login_url: account.login_url,
     password: pwd as unknown as string,
   };
 }
