@@ -427,6 +427,16 @@ export type Database = {
     }
     Functions: {
       _turnitin_key: { Args: never; Returns: string }
+      add_turnitin_account: {
+        Args: {
+          p_email: string
+          p_label: string
+          p_login_url: string
+          p_notes: string
+          p_password: string
+        }
+        Returns: string
+      }
       claim_next_job: {
         Args: { p_worker_id: string }
         Returns: {
