@@ -52,7 +52,8 @@ export async function getSlotInfo(slotId: string): Promise<SlotInfo> {
   if (e1) throw e1;
   const { data: pwd, error: e2 } = await supabase.rpc("decrypt_account_password", { account: slot.account_id });
   if (e2) throw e2;
-  const acc = (slot as { turnitin_accounts: { label: string; email: string; login_url: string } }).turnitin_accounts;
+  const acc = (slot as unknown as { turnitin_accounts: { label: string; email: string; login_url: string } | { label: string; email: string; login_url: string }[] }).turnitin_accounts;
+  const account = Array.isArray(acc) ? acc[0] : acc;
   return {
     slot_id: slot.id as string,
     slot_label: slot.label as string,
