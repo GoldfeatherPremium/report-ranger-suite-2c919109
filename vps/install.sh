@@ -32,11 +32,15 @@ apt-get install -y \
 
 echo "==> Installing worker npm deps"
 cd "$WORKER_DIR"
-npm install --omit=dev
+# Install ALL deps (incl. dev) — TypeScript is needed to build the worker.
+npm install
 npx playwright install --with-deps chromium
 
 echo "==> Building worker"
 npm run build
+
+echo "==> Pruning dev dependencies (build is done)"
+npm prune --omit=dev
 
 if [[ ! -f "$WORKER_DIR/.env" ]]; then
   cp "$WORKER_DIR/.env.example" "$WORKER_DIR/.env"
