@@ -14,16 +14,298 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      audit_logs: {
+        Row: {
+          action: string
+          actor_id: string | null
+          created_at: string
+          entity: string | null
+          entity_id: string | null
+          id: string
+          metadata: Json | null
+        }
+        Insert: {
+          action: string
+          actor_id?: string | null
+          created_at?: string
+          entity?: string | null
+          entity_id?: string | null
+          id?: string
+          metadata?: Json | null
+        }
+        Update: {
+          action?: string
+          actor_id?: string | null
+          created_at?: string
+          entity?: string | null
+          entity_id?: string | null
+          id?: string
+          metadata?: Json | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "audit_logs_actor_id_fkey"
+            columns: ["actor_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      jobs: {
+        Row: {
+          attempts: number
+          bull_job_id: string | null
+          created_at: string
+          error: string | null
+          finished_at: string | null
+          id: string
+          max_attempts: number
+          mime_type: string | null
+          original_name: string
+          portal_id: string | null
+          queued_at: string | null
+          size_bytes: number | null
+          source_path: string
+          started_at: string | null
+          status: Database["public"]["Enums"]["job_state"]
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          attempts?: number
+          bull_job_id?: string | null
+          created_at?: string
+          error?: string | null
+          finished_at?: string | null
+          id?: string
+          max_attempts?: number
+          mime_type?: string | null
+          original_name: string
+          portal_id?: string | null
+          queued_at?: string | null
+          size_bytes?: number | null
+          source_path: string
+          started_at?: string | null
+          status?: Database["public"]["Enums"]["job_state"]
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          attempts?: number
+          bull_job_id?: string | null
+          created_at?: string
+          error?: string | null
+          finished_at?: string | null
+          id?: string
+          max_attempts?: number
+          mime_type?: string | null
+          original_name?: string
+          portal_id?: string | null
+          queued_at?: string | null
+          size_bytes?: number | null
+          source_path?: string
+          started_at?: string | null
+          status?: Database["public"]["Enums"]["job_state"]
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "jobs_portal_id_fkey"
+            columns: ["portal_id"]
+            isOneToOne: false
+            referencedRelation: "portal_configs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "jobs_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      portal_configs: {
+        Row: {
+          base_url: string
+          created_at: string
+          id: string
+          is_active: boolean
+          login_config: Json | null
+          name: string
+          poll_interval_ms: number
+          selectors: Json
+          timeout_ms: number
+          updated_at: string
+        }
+        Insert: {
+          base_url: string
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          login_config?: Json | null
+          name: string
+          poll_interval_ms?: number
+          selectors?: Json
+          timeout_ms?: number
+          updated_at?: string
+        }
+        Update: {
+          base_url?: string
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          login_config?: Json | null
+          name?: string
+          poll_interval_ms?: number
+          selectors?: Json
+          timeout_ms?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      reports: {
+        Row: {
+          created_at: string
+          file_name: string
+          id: string
+          job_id: string
+          mime_type: string | null
+          size_bytes: number | null
+          storage_path: string
+        }
+        Insert: {
+          created_at?: string
+          file_name: string
+          id?: string
+          job_id: string
+          mime_type?: string | null
+          size_bytes?: number | null
+          storage_path: string
+        }
+        Update: {
+          created_at?: string
+          file_name?: string
+          id?: string
+          job_id?: string
+          mime_type?: string | null
+          size_bytes?: number | null
+          storage_path?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "reports_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "jobs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      users: {
+        Row: {
+          created_at: string
+          email: string
+          full_name: string | null
+          id: string
+          role: Database["public"]["Enums"]["user_role"]
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          email: string
+          full_name?: string | null
+          id: string
+          role?: Database["public"]["Enums"]["user_role"]
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          email?: string
+          full_name?: string | null
+          id?: string
+          role?: Database["public"]["Enums"]["user_role"]
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      worker_health: {
+        Row: {
+          active_jobs: number
+          last_seen: string
+          status: string
+          worker_id: string
+        }
+        Insert: {
+          active_jobs?: number
+          last_seen?: string
+          status?: string
+          worker_id: string
+        }
+        Update: {
+          active_jobs?: number
+          last_seen?: string
+          status?: string
+          worker_id?: string
+        }
+        Relationships: []
+      }
+      worker_logs: {
+        Row: {
+          created_at: string
+          id: string
+          job_id: string | null
+          level: string
+          message: string
+          metadata: Json | null
+          worker_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          job_id?: string | null
+          level?: string
+          message: string
+          metadata?: Json | null
+          worker_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          job_id?: string | null
+          level?: string
+          message?: string
+          metadata?: Json | null
+          worker_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "worker_logs_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "jobs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      is_admin: { Args: never; Returns: boolean }
     }
     Enums: {
-      [_ in never]: never
+      job_state:
+        | "pending"
+        | "queued"
+        | "processing"
+        | "completed"
+        | "failed"
+        | "cancelled"
+      user_role: "user" | "admin"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -150,6 +432,16 @@ export type CompositeTypes<
 
 export const Constants = {
   public: {
-    Enums: {},
+    Enums: {
+      job_state: [
+        "pending",
+        "queued",
+        "processing",
+        "completed",
+        "failed",
+        "cancelled",
+      ],
+      user_role: ["user", "admin"],
+    },
   },
 } as const
