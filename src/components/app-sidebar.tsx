@@ -18,6 +18,7 @@ const adminItems = [
   { title: "All Jobs", url: "/admin/jobs", icon: Briefcase },
   { title: "Turnitin", url: "/admin/turnitin", icon: KeyRound },
   { title: "Portal Configs", url: "/admin/portals", icon: Settings },
+  { title: "VPS Credentials", url: "/admin/settings", icon: KeyRound },
 ];
 
 export function AppSidebar() {
