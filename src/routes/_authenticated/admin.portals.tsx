@@ -53,7 +53,7 @@ function PortalsPage() {
   }
 
   async function save() {
-    let selectors: Record<string, unknown>;
+    let selectors: unknown;
     try { selectors = JSON.parse(form.selectors); }
     catch { return toast.error("Selectors must be valid JSON"); }
     setBusy(true);
