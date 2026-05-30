@@ -16,6 +16,7 @@ import { Route as AuthenticatedHistoryRouteImport } from './routes/_authenticate
 import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
 import { Route as AuthenticatedAdminRouteImport } from './routes/_authenticated/admin'
 import { Route as AuthenticatedAdminUsersRouteImport } from './routes/_authenticated/admin.users'
+import { Route as AuthenticatedAdminTurnitinRouteImport } from './routes/_authenticated/admin.turnitin'
 import { Route as AuthenticatedAdminPortalsRouteImport } from './routes/_authenticated/admin.portals'
 import { Route as AuthenticatedAdminJobsRouteImport } from './routes/_authenticated/admin.jobs'
 
@@ -53,6 +54,12 @@ const AuthenticatedAdminUsersRoute = AuthenticatedAdminUsersRouteImport.update({
   path: '/users',
   getParentRoute: () => AuthenticatedAdminRoute,
 } as any)
+const AuthenticatedAdminTurnitinRoute =
+  AuthenticatedAdminTurnitinRouteImport.update({
+    id: '/turnitin',
+    path: '/turnitin',
+    getParentRoute: () => AuthenticatedAdminRoute,
+  } as any)
 const AuthenticatedAdminPortalsRoute =
   AuthenticatedAdminPortalsRouteImport.update({
     id: '/portals',
@@ -73,6 +80,7 @@ export interface FileRoutesByFullPath {
   '/history': typeof AuthenticatedHistoryRoute
   '/admin/jobs': typeof AuthenticatedAdminJobsRoute
   '/admin/portals': typeof AuthenticatedAdminPortalsRoute
+  '/admin/turnitin': typeof AuthenticatedAdminTurnitinRoute
   '/admin/users': typeof AuthenticatedAdminUsersRoute
 }
 export interface FileRoutesByTo {
@@ -83,6 +91,7 @@ export interface FileRoutesByTo {
   '/history': typeof AuthenticatedHistoryRoute
   '/admin/jobs': typeof AuthenticatedAdminJobsRoute
   '/admin/portals': typeof AuthenticatedAdminPortalsRoute
+  '/admin/turnitin': typeof AuthenticatedAdminTurnitinRoute
   '/admin/users': typeof AuthenticatedAdminUsersRoute
 }
 export interface FileRoutesById {
@@ -95,6 +104,7 @@ export interface FileRoutesById {
   '/_authenticated/history': typeof AuthenticatedHistoryRoute
   '/_authenticated/admin/jobs': typeof AuthenticatedAdminJobsRoute
   '/_authenticated/admin/portals': typeof AuthenticatedAdminPortalsRoute
+  '/_authenticated/admin/turnitin': typeof AuthenticatedAdminTurnitinRoute
   '/_authenticated/admin/users': typeof AuthenticatedAdminUsersRoute
 }
 export interface FileRouteTypes {
@@ -107,6 +117,7 @@ export interface FileRouteTypes {
     | '/history'
     | '/admin/jobs'
     | '/admin/portals'
+    | '/admin/turnitin'
     | '/admin/users'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -117,6 +128,7 @@ export interface FileRouteTypes {
     | '/history'
     | '/admin/jobs'
     | '/admin/portals'
+    | '/admin/turnitin'
     | '/admin/users'
   id:
     | '__root__'
@@ -128,6 +140,7 @@ export interface FileRouteTypes {
     | '/_authenticated/history'
     | '/_authenticated/admin/jobs'
     | '/_authenticated/admin/portals'
+    | '/_authenticated/admin/turnitin'
     | '/_authenticated/admin/users'
   fileRoutesById: FileRoutesById
 }
@@ -188,6 +201,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedAdminUsersRouteImport
       parentRoute: typeof AuthenticatedAdminRoute
     }
+    '/_authenticated/admin/turnitin': {
+      id: '/_authenticated/admin/turnitin'
+      path: '/turnitin'
+      fullPath: '/admin/turnitin'
+      preLoaderRoute: typeof AuthenticatedAdminTurnitinRouteImport
+      parentRoute: typeof AuthenticatedAdminRoute
+    }
     '/_authenticated/admin/portals': {
       id: '/_authenticated/admin/portals'
       path: '/portals'
@@ -208,12 +228,14 @@ declare module '@tanstack/react-router' {
 interface AuthenticatedAdminRouteChildren {
   AuthenticatedAdminJobsRoute: typeof AuthenticatedAdminJobsRoute
   AuthenticatedAdminPortalsRoute: typeof AuthenticatedAdminPortalsRoute
+  AuthenticatedAdminTurnitinRoute: typeof AuthenticatedAdminTurnitinRoute
   AuthenticatedAdminUsersRoute: typeof AuthenticatedAdminUsersRoute
 }
 
 const AuthenticatedAdminRouteChildren: AuthenticatedAdminRouteChildren = {
   AuthenticatedAdminJobsRoute: AuthenticatedAdminJobsRoute,
   AuthenticatedAdminPortalsRoute: AuthenticatedAdminPortalsRoute,
+  AuthenticatedAdminTurnitinRoute: AuthenticatedAdminTurnitinRoute,
   AuthenticatedAdminUsersRoute: AuthenticatedAdminUsersRoute,
 }
 
@@ -244,3 +266,13 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
+
+import type { getRouter } from './router.tsx'
+import type { startInstance } from './start.ts'
+declare module '@tanstack/react-start' {
+  interface Register {
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
+    config: Awaited<ReturnType<typeof startInstance.getOptions>>
+  }
+}
