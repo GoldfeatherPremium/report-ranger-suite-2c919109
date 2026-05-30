@@ -17,6 +17,7 @@ import { Route as AuthenticatedDashboardRouteImport } from './routes/_authentica
 import { Route as AuthenticatedAdminRouteImport } from './routes/_authenticated/admin'
 import { Route as AuthenticatedAdminIndexRouteImport } from './routes/_authenticated/admin.index'
 import { Route as AuthenticatedAdminUsersRouteImport } from './routes/_authenticated/admin.users'
+import { Route as AuthenticatedAdminTurnitinRouteImport } from './routes/_authenticated/admin.turnitin'
 import { Route as AuthenticatedAdminPortalsRouteImport } from './routes/_authenticated/admin.portals'
 import { Route as AuthenticatedAdminJobsRouteImport } from './routes/_authenticated/admin.jobs'
 import { Route as AuthenticatedAdminTurnitinIndexRouteImport } from './routes/_authenticated/admin.turnitin.index'
@@ -61,6 +62,12 @@ const AuthenticatedAdminUsersRoute = AuthenticatedAdminUsersRouteImport.update({
   path: '/users',
   getParentRoute: () => AuthenticatedAdminRoute,
 } as any)
+const AuthenticatedAdminTurnitinRoute =
+  AuthenticatedAdminTurnitinRouteImport.update({
+    id: '/turnitin',
+    path: '/turnitin',
+    getParentRoute: () => AuthenticatedAdminRoute,
+  } as any)
 const AuthenticatedAdminPortalsRoute =
   AuthenticatedAdminPortalsRouteImport.update({
     id: '/portals',
@@ -74,15 +81,15 @@ const AuthenticatedAdminJobsRoute = AuthenticatedAdminJobsRouteImport.update({
 } as any)
 const AuthenticatedAdminTurnitinIndexRoute =
   AuthenticatedAdminTurnitinIndexRouteImport.update({
-    id: '/turnitin/',
-    path: '/turnitin/',
-    getParentRoute: () => AuthenticatedAdminRoute,
+    id: '/',
+    path: '/',
+    getParentRoute: () => AuthenticatedAdminTurnitinRoute,
   } as any)
 const AuthenticatedAdminTurnitinAccountIdRoute =
   AuthenticatedAdminTurnitinAccountIdRouteImport.update({
-    id: '/turnitin/$accountId',
-    path: '/turnitin/$accountId',
-    getParentRoute: () => AuthenticatedAdminRoute,
+    id: '/$accountId',
+    path: '/$accountId',
+    getParentRoute: () => AuthenticatedAdminTurnitinRoute,
   } as any)
 
 export interface FileRoutesByFullPath {
@@ -93,6 +100,7 @@ export interface FileRoutesByFullPath {
   '/history': typeof AuthenticatedHistoryRoute
   '/admin/jobs': typeof AuthenticatedAdminJobsRoute
   '/admin/portals': typeof AuthenticatedAdminPortalsRoute
+  '/admin/turnitin': typeof AuthenticatedAdminTurnitinRouteWithChildren
   '/admin/users': typeof AuthenticatedAdminUsersRoute
   '/admin/': typeof AuthenticatedAdminIndexRoute
   '/admin/turnitin/$accountId': typeof AuthenticatedAdminTurnitinAccountIdRoute
@@ -120,6 +128,7 @@ export interface FileRoutesById {
   '/_authenticated/history': typeof AuthenticatedHistoryRoute
   '/_authenticated/admin/jobs': typeof AuthenticatedAdminJobsRoute
   '/_authenticated/admin/portals': typeof AuthenticatedAdminPortalsRoute
+  '/_authenticated/admin/turnitin': typeof AuthenticatedAdminTurnitinRouteWithChildren
   '/_authenticated/admin/users': typeof AuthenticatedAdminUsersRoute
   '/_authenticated/admin/': typeof AuthenticatedAdminIndexRoute
   '/_authenticated/admin/turnitin/$accountId': typeof AuthenticatedAdminTurnitinAccountIdRoute
@@ -135,6 +144,7 @@ export interface FileRouteTypes {
     | '/history'
     | '/admin/jobs'
     | '/admin/portals'
+    | '/admin/turnitin'
     | '/admin/users'
     | '/admin/'
     | '/admin/turnitin/$accountId'
@@ -161,6 +171,7 @@ export interface FileRouteTypes {
     | '/_authenticated/history'
     | '/_authenticated/admin/jobs'
     | '/_authenticated/admin/portals'
+    | '/_authenticated/admin/turnitin'
     | '/_authenticated/admin/users'
     | '/_authenticated/admin/'
     | '/_authenticated/admin/turnitin/$accountId'
@@ -231,6 +242,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedAdminUsersRouteImport
       parentRoute: typeof AuthenticatedAdminRoute
     }
+    '/_authenticated/admin/turnitin': {
+      id: '/_authenticated/admin/turnitin'
+      path: '/turnitin'
+      fullPath: '/admin/turnitin'
+      preLoaderRoute: typeof AuthenticatedAdminTurnitinRouteImport
+      parentRoute: typeof AuthenticatedAdminRoute
+    }
     '/_authenticated/admin/portals': {
       id: '/_authenticated/admin/portals'
       path: '/portals'
@@ -247,38 +265,52 @@ declare module '@tanstack/react-router' {
     }
     '/_authenticated/admin/turnitin/': {
       id: '/_authenticated/admin/turnitin/'
-      path: '/turnitin'
+      path: '/'
       fullPath: '/admin/turnitin/'
       preLoaderRoute: typeof AuthenticatedAdminTurnitinIndexRouteImport
-      parentRoute: typeof AuthenticatedAdminRoute
+      parentRoute: typeof AuthenticatedAdminTurnitinRoute
     }
     '/_authenticated/admin/turnitin/$accountId': {
       id: '/_authenticated/admin/turnitin/$accountId'
-      path: '/turnitin/$accountId'
+      path: '/$accountId'
       fullPath: '/admin/turnitin/$accountId'
       preLoaderRoute: typeof AuthenticatedAdminTurnitinAccountIdRouteImport
-      parentRoute: typeof AuthenticatedAdminRoute
+      parentRoute: typeof AuthenticatedAdminTurnitinRoute
     }
   }
 }
 
+interface AuthenticatedAdminTurnitinRouteChildren {
+  AuthenticatedAdminTurnitinAccountIdRoute: typeof AuthenticatedAdminTurnitinAccountIdRoute
+  AuthenticatedAdminTurnitinIndexRoute: typeof AuthenticatedAdminTurnitinIndexRoute
+}
+
+const AuthenticatedAdminTurnitinRouteChildren: AuthenticatedAdminTurnitinRouteChildren =
+  {
+    AuthenticatedAdminTurnitinAccountIdRoute:
+      AuthenticatedAdminTurnitinAccountIdRoute,
+    AuthenticatedAdminTurnitinIndexRoute: AuthenticatedAdminTurnitinIndexRoute,
+  }
+
+const AuthenticatedAdminTurnitinRouteWithChildren =
+  AuthenticatedAdminTurnitinRoute._addFileChildren(
+    AuthenticatedAdminTurnitinRouteChildren,
+  )
+
 interface AuthenticatedAdminRouteChildren {
   AuthenticatedAdminJobsRoute: typeof AuthenticatedAdminJobsRoute
   AuthenticatedAdminPortalsRoute: typeof AuthenticatedAdminPortalsRoute
+  AuthenticatedAdminTurnitinRoute: typeof AuthenticatedAdminTurnitinRouteWithChildren
   AuthenticatedAdminUsersRoute: typeof AuthenticatedAdminUsersRoute
   AuthenticatedAdminIndexRoute: typeof AuthenticatedAdminIndexRoute
-  AuthenticatedAdminTurnitinAccountIdRoute: typeof AuthenticatedAdminTurnitinAccountIdRoute
-  AuthenticatedAdminTurnitinIndexRoute: typeof AuthenticatedAdminTurnitinIndexRoute
 }
 
 const AuthenticatedAdminRouteChildren: AuthenticatedAdminRouteChildren = {
   AuthenticatedAdminJobsRoute: AuthenticatedAdminJobsRoute,
   AuthenticatedAdminPortalsRoute: AuthenticatedAdminPortalsRoute,
+  AuthenticatedAdminTurnitinRoute: AuthenticatedAdminTurnitinRouteWithChildren,
   AuthenticatedAdminUsersRoute: AuthenticatedAdminUsersRoute,
   AuthenticatedAdminIndexRoute: AuthenticatedAdminIndexRoute,
-  AuthenticatedAdminTurnitinAccountIdRoute:
-    AuthenticatedAdminTurnitinAccountIdRoute,
-  AuthenticatedAdminTurnitinIndexRoute: AuthenticatedAdminTurnitinIndexRoute,
 }
 
 const AuthenticatedAdminRouteWithChildren =
