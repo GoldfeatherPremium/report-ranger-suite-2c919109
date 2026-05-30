@@ -37,7 +37,7 @@ bash install.sh
 # paste your secrets
 nano /opt/dochub/vps/worker/.env
 #   SUPABASE_URL=https://qxftygfzqouzhznnmrsq.supabase.co
-#   SUPABASE_SERVICE_ROLE_KEY=<get from Lovable Cloud → Backend → Settings → Service role key>
+#   SUPABASE_SERVICE_ROLE_KEY=<paste the JWT whose payload role is "service_role"; not the anon/publishable key>
 #   WORKER_ID=contabo-1
 #   HEADLESS=true
 #   SUBMISSION_TIMEOUT_MS=1800000
