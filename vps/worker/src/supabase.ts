@@ -6,13 +6,38 @@ if (!url || !key) {
   throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set");
 }
 
-// The worker only uses the REST/Storage/RPC APIs — it never opens a realtime
-// channel — so no custom WebSocket transport is needed. Node 20+ ships a
-// global WebSocket, which supabase-js picks up automatically if it ever needs
-// one.
+// Catch the most common setup mistake early: pasting the anon / publishable
+// key instead of the service_role key. The worker bypasses RLS and needs the
+// service_role key, so a wrong key would otherwise fail with confusing
+// permission errors deep in the job loop.
+assertServiceRoleKey(key);
+
+// The worker only uses the REST / Storage / RPC APIs — it never opens a
+// realtime channel — so no custom WebSocket transport is needed. Node 20+
+// ships a global WebSocket, which supabase-js picks up automatically if it
+// ever needs one.
 export const supabase = createClient(url, key, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
+
+function assertServiceRoleKey(key: string) {
+  const parts = key.split(".");
+  if (parts.length !== 3) {
+    throw new Error("SUPABASE_SERVICE_ROLE_KEY must be the JWT service_role key, not a publishable key or placeholder");
+  }
+
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as { role?: string };
+    if (payload.role !== "service_role") {
+      throw new Error(`SUPABASE_SERVICE_ROLE_KEY is a ${payload.role ?? "unknown"} key; paste the service_role key instead`);
+    }
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new Error("SUPABASE_SERVICE_ROLE_KEY is not a valid JWT service_role key");
+    }
+    throw error;
+  }
+}
 
 export type Job = {
   id: string;
