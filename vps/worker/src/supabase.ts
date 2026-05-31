@@ -71,9 +71,14 @@ export type SlotInfo = {
 export async function claimNextJob(workerId: string): Promise<Job | null> {
   const { data, error } = await supabase.rpc("claim_next_job", { p_worker_id: workerId });
   if (error) throw error;
-  if (!data) return null;
-  // RPC returns a single row (the jobs table type)
-  return Array.isArray(data) ? (data[0] as Job) ?? null : (data as Job);
+  // claim_next_job returns the jobs composite type. When there's no free slot
+  // or no queued job it returns a SQL NULL row, which PostgREST serializes as
+  // an object whose fields are all null (NOT JSON null). So a plain `!data`
+  // check isn't enough — we must also reject a row that has no id, otherwise
+  // the worker "claims" a phantom job, fails with "no slot assigned", and spins.
+  const row = (Array.isArray(data) ? data[0] : data) as Job | null | undefined;
+  if (!row || !row.id) return null;
+  return row;
 }
 
 export async function getSlotInfo(slotId: string): Promise<SlotInfo> {
