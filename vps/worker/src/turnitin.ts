@@ -42,7 +42,17 @@ export async function submitToTurnitin(opts: {
       headless,
       args: ["--no-sandbox", "--disable-dev-shm-usage"],
     });
-    const ctx = await browser.newContext({ acceptDownloads: true });
+    // Present as a normal desktop Chrome. Playwright's default headless UA
+    // contains "HeadlessChrome", which Turnitin and similar sites often block
+    // with a challenge page that has no login form (which then looks like a
+    // missing selector). A realistic UA + viewport avoids that.
+    const ctx = await browser.newContext({
+      acceptDownloads: true,
+      userAgent:
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      viewport: { width: 1366, height: 900 },
+      locale: "en-US",
+    });
     const page = await ctx.newPage();
 
     await onProgress(`opening login: ${slot.login_url}`);
