@@ -2,6 +2,9 @@
 Description=Turnitin Document Hub worker
 After=network-online.target
 Wants=network-online.target
+# crash-loop protection (these keys belong in [Unit], not [Service])
+StartLimitIntervalSec=300
+StartLimitBurst=10
 
 [Service]
 Type=simple
@@ -12,9 +15,6 @@ Restart=always
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
-# crash-loop protection
-StartLimitIntervalSec=300
-StartLimitBurst=10
 
 [Install]
 WantedBy=multi-user.target
