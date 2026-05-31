@@ -60,6 +60,27 @@ systemctl enable --now turnitin-worker-2
 
 ---
 
+## Automatic updates (optional)
+
+By default the VPS only changes when you re-run the deploy script. To make it
+pull, rebuild, and restart itself whenever the tracked branch gets a new
+commit (checked every ~5 min):
+
+```bash
+sudo bash /opt/dochub/vps/enable-auto-update.sh
+```
+
+It only redeploys on an actual new commit, so an up-to-date repo is a no-op
+with no downtime. Manage it with:
+
+```bash
+journalctl -u turnitin-worker-update -f                 # watch auto-updates
+systemctl list-timers turnitin-worker-update --no-pager # next scheduled run
+systemctl disable --now turnitin-worker-update.timer    # turn it back off
+```
+
+---
+
 ## Tuning the Turnitin flow
 
 The default selectors in `worker/src/turnitin.ts` cover the standard

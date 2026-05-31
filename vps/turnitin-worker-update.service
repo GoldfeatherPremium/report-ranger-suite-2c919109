@@ -1,0 +1,10 @@
+[Unit]
+Description=Auto-update the Turnitin worker from git
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env bash __REPO_DIR__/vps/auto-update.sh
+StandardOutput=journal
+StandardError=journal

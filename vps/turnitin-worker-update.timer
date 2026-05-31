@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodically auto-update the Turnitin worker from git
+
+[Timer]
+# First check 2 min after boot, then every 5 min while running.
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
