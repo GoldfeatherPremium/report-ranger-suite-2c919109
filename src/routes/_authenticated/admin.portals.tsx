@@ -131,8 +131,8 @@ function PortalsPage() {
       {isLoading ? (
         <div className="flex justify-center p-12"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>
       ) : (
-        <div className="overflow-hidden rounded-xl border bg-card">
-          <table className="w-full text-sm">
+        <div className="overflow-x-auto rounded-xl border bg-card">
+          <table className="w-full min-w-[640px] text-sm">
             <thead className="bg-muted/40 text-left text-xs uppercase tracking-wider text-muted-foreground">
               <tr>
                 <th className="px-4 py-3">Name</th>
