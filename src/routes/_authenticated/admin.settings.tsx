@@ -49,6 +49,16 @@ function Page() {
   });
 
   const [reveal, setReveal] = useState(false);
+  const validation = data ? validateServiceRoleKey(data.serviceRoleKey) : null;
+  const keyOk = validation?.ok === true;
+
+  async function copyGuarded(value: string, label: string) {
+    if (!keyOk) {
+      toast.error("Refusing to copy — service role key failed validation");
+      return;
+    }
+    return copy(value, label);
+  }
 
   async function copy(value: string, label: string) {
     try {
