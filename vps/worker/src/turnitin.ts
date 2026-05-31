@@ -6,14 +6,43 @@ import type { SlotInfo } from "./supabase.js";
 
 // === Selectors — adjust here if Turnitin UI shifts ===
 const SEL = {
+  // ── Login page ──────────────────────────────────────────────────────────────
   emailInput: 'input[name="email"], input#email, input[type="email"], input[name="user_email"], input[autocomplete="username"]',
   passwordInput: 'input[name="password"], input[name="user_password"], input#password, input#user_password, input[type="password"]',
   loginButton: 'button[type="submit"], input[type="submit"], button:has-text("Log in"), input[value="Log in"], input[value="Login"], #login',
+
+  // ── Assignment submit page ───────────────────────────────────────────────────
   submitFileButton: 'a:has-text("Submit"), button:has-text("Submit")',
   fileInput: 'input[type="file"]',
   confirmSubmit: 'button:has-text("Confirm"), input[value="Confirm"]',
-  similarityCell: '[data-similarity], .similarity-score, .or-link',
-  downloadReportButton: 'a:has-text("Download"), button:has-text("Download")',
+
+  // ── Assignment dashboard — the clickable similarity-score link ───────────────
+  // Turnitin renders the score as an <a class="or-link"> or a data-similarity cell.
+  // Clicking it opens the viewer in a new tab (ev.turnitin.com/app/carta/e).
+  similarityCell: '.or-link, [data-similarity], .similarity-score, a[href*="viewer"], a[href*="ev.turnitin"]',
+
+  // ── Viewer (ev.turnitin.com/app/carta/e) — download icon in right panel ──────
+  // Step 2: the downward-arrow icon button.  Multiple aria-label / title / class
+  // fallbacks cover different Turnitin skin versions.
+  downloadButton: [
+    'button[aria-label="Download"]',
+    'button[aria-label*="download" i]',
+    'button[title*="Download" i]',
+    'button[data-testid*="download" i]',
+    'button[class*="download" i]',
+    '[aria-label="Download report"]',
+    'a[aria-label*="download" i]',
+  ].join(", "),
+
+  // ── Download popup — "Current View" option ──────────────────────────────────
+  // Step 3: after the popup opens, click this to receive the PDF.
+  currentViewOption: [
+    'button:has-text("Current View")',
+    'a:has-text("Current View")',
+    'li:has-text("Current View")',
+    'span:has-text("Current View")',
+    '[data-testid*="current-view" i]',
+  ].join(", "),
 };
 
 export type SubmissionResult = {
@@ -114,7 +143,7 @@ export async function submitToTurnitin(opts: {
     const submissionId = await waitForSimilarity(page, submissionTimeoutMs, pollIntervalMs, onProgress);
 
     await onProgress("downloading similarity PDF");
-    const pdf = await downloadSimilarityPdf(page);
+    const pdf = await downloadSimilarityPdf(page, onProgress);
 
     return { pdf, submissionId };
   } finally {
@@ -226,24 +255,92 @@ async function waitForSimilarity(page: Page, timeoutMs: number, pollMs: number, 
   throw new Error("Timed out waiting for similarity score");
 }
 
-async function downloadSimilarityPdf(page: Page): Promise<Buffer> {
-  // Open the similarity report viewer, then trigger PDF download.
-  // Turnitin's report viewer opens in a new tab; capture both contexts.
+// ─────────────────────────────────────────────────────────────────────────────
+// Download flow (3 steps matching the Turnitin viewer UI):
+//
+//  Step 1 — Assignment dashboard: click the similarity-score link (e.g. "20%").
+//            Turnitin opens ev.turnitin.com/app/carta/e in a new browser tab.
+//
+//  Step 2 — Viewer right panel: click the downward-arrow (Download) icon button.
+//            A "Download" popup/modal appears.
+//
+//  Step 3 — Download popup: click "Current View".
+//            The browser triggers a file download; capture and return the bytes.
+// ─────────────────────────────────────────────────────────────────────────────
+async function downloadSimilarityPdf(
+  page: Page,
+  onProgress: (m: string) => Promise<void>,
+): Promise<Buffer> {
   const ctx = page.context();
-  const newPagePromise = ctx.waitForEvent("page", { timeout: 30_000 }).catch(() => null);
 
-  await page.locator(SEL.similarityCell).first().click().catch(() => {});
-  const viewer = (await newPagePromise) ?? page;
-  await viewer.waitForLoadState("domcontentloaded", { timeout: 60_000 }).catch(() => {});
+  // ── Step 1: open the similarity viewer ──────────────────────────────────────
+  await onProgress("step1: clicking similarity score link to open viewer");
+  const newPagePromise = ctx.waitForEvent("page", { timeout: 60_000 }).catch(() => null);
 
-  const downloadPromise = viewer.waitForEvent("download", { timeout: 120_000 });
-  await viewer.locator(SEL.downloadReportButton).first().click({ timeout: 30_000 }).catch(async () => {
-    // Some skins use a menu — try opening it first
-    await viewer.keyboard.press("d").catch(() => {});
+  await page.locator(SEL.similarityCell).first().click({ timeout: 15_000 }).catch(async (e: unknown) => {
+    await onProgress(`similarity cell click failed (${e instanceof Error ? e.message : String(e)}), dumping page`);
+    await dumpPageControls(page, onProgress);
+    throw new Error("Cannot click similarity cell — check [diag] lines above for correct selector");
   });
+
+  // Viewer may open in a new tab (most common) or navigate in the same tab.
+  let viewer = await newPagePromise;
+  if (!viewer) {
+    await onProgress("no new tab detected — assuming same-tab navigation");
+    await page.waitForURL(/ev\.turnitin\.com/, { timeout: 30_000 }).catch(() => {});
+    viewer = page;
+  }
+
+  await viewer.waitForLoadState("domcontentloaded", { timeout: 60_000 }).catch(() => {});
+  await onProgress(`step1 done: viewer url=${viewer.url()}`);
+
+  // The viewer is a React SPA; give it time to hydrate and render controls.
+  await viewer.waitForTimeout(4_000);
+
+  // ── Step 2: click the download icon in the viewer's right panel ─────────────
+  await onProgress("step2: clicking download icon button in viewer right panel");
+  const downloadBtnClicked = await tryClickInAnyFrame(viewer, SEL.downloadButton, 30_000);
+  if (!downloadBtnClicked) {
+    await dumpPageControls(viewer, onProgress);
+    throw new Error(
+      "Cannot find the download icon button in the Turnitin viewer. " +
+      "See [diag] lines above — share them to tune SEL.downloadButton.",
+    );
+  }
+
+  // Give the Download popup a moment to animate in.
+  await viewer.waitForTimeout(1_000);
+
+  // ── Step 3: click "Current View" in the Download popup ──────────────────────
+  await onProgress("step3: clicking Current View in download popup");
+
+  // Register the download listener BEFORE clicking so we never miss the event.
+  const downloadPromise = viewer.waitForEvent("download", { timeout: 60_000 });
+
+  const currentViewClicked = await tryClickInAnyFrame(viewer, SEL.currentViewOption, 15_000);
+  if (!currentViewClicked) {
+    await dumpPageControls(viewer, onProgress);
+    throw new Error(
+      "Cannot find the 'Current View' option in the Download popup. " +
+      "See [diag] lines above — share them to tune SEL.currentViewOption.",
+    );
+  }
+
   const download = await downloadPromise;
-  const path = await download.path();
-  if (!path) throw new Error("No download path");
+  const filePath = await download.path();
+  if (!filePath) throw new Error("Turnitin download completed but no file path was returned");
+
+  await onProgress("download received, reading file");
   const { readFile } = await import("node:fs/promises");
-  return await readFile(path);
+  return await readFile(filePath);
+}
+
+// Like clickInAnyFrame but returns false instead of throwing when nothing is found.
+async function tryClickInAnyFrame(page: Page, selector: string, timeoutMs: number): Promise<boolean> {
+  try {
+    await clickInAnyFrame(page, selector, timeoutMs);
+    return true;
+  } catch {
+    return false;
+  }
 }
