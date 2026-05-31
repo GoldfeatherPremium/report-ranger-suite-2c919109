@@ -8,6 +8,7 @@ import { submitToTurnitin } from "./turnitin.js";
 const WORKER_ID = process.env.WORKER_ID ?? `worker-${process.pid}`;
 const HEADLESS = (process.env.HEADLESS ?? "true") === "true";
 const SUBMISSION_TIMEOUT_MS = Number(process.env.SUBMISSION_TIMEOUT_MS ?? 1_800_000);
+const UPLOAD_TIMEOUT_MS = Number(process.env.UPLOAD_TIMEOUT_MS ?? 360_000);
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? 15_000);
 const CLAIM_IDLE_MS = Number(process.env.CLAIM_IDLE_MS ?? 10_000);
 const HEARTBEAT_MS = Number(process.env.HEARTBEAT_MS ?? 30_000);
@@ -45,6 +46,7 @@ async function processOne() {
     const { pdf, submissionId } = await submitToTurnitin({
       slot, fileBytes, originalName: job.original_name,
       headless: HEADLESS, submissionTimeoutMs: SUBMISSION_TIMEOUT_MS, pollIntervalMs: POLL_INTERVAL_MS,
+      uploadTimeoutMs: UPLOAD_TIMEOUT_MS,
       onProgress: async (m) => { await log(WORKER_ID, job.id, "info", m); await touchJob(job.id); },
     });
 
