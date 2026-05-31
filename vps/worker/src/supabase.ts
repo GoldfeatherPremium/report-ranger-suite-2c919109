@@ -166,12 +166,14 @@ export async function markJobFailed(jobId: string, attempts: number, max: number
     // Document was already submitted to Turnitin — requeue but KEEP the slot
     // assignment so the retry polls the same assignment dashboard instead of
     // uploading to a new slot.  The slot_usage row also stays open.
+    // Delay by 15 min so we don't spin instantly when Turnitin is still processing.
+    const retryAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
     await supabase.from("jobs").update({
       status: "queued",
       error,
       worker_id: null,
       // slot_id intentionally NOT nulled — preserved for the retry
-      queued_at: new Date().toISOString(),
+      queued_at: retryAt,
     }).eq("id", jobId);
     // Do NOT free turnitin_slot_usage — the slot must stay "in use".
   } else {
