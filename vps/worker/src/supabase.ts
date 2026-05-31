@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import WebSocket from "ws";
 
 const url = process.env.SUPABASE_URL;
 const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -12,12 +13,15 @@ if (!url || !key) {
 // permission errors deep in the job loop.
 assertServiceRoleKey(key);
 
-// The worker only uses the REST / Storage / RPC APIs — it never opens a
-// realtime channel — so no custom WebSocket transport is needed. Node 20+
-// ships a global WebSocket, which supabase-js picks up automatically if it
-// ever needs one.
+// supabase-js eagerly builds a realtime client inside createClient(), even
+// though this worker never opens a realtime channel. On Node < 22 there is no
+// global WebSocket, so we must hand it the `ws` implementation or createClient()
+// throws "Node.js 20 detected without native WebSocket support". The cast is
+// because ws's constructor signature is slightly wider than the type supabase
+// expects; it's fully compatible at runtime.
 export const supabase = createClient(url, key, {
   auth: { persistSession: false, autoRefreshToken: false },
+  realtime: { transport: WebSocket as unknown as typeof globalThis.WebSocket },
 });
 
 function assertServiceRoleKey(key: string) {
