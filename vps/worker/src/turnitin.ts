@@ -524,34 +524,72 @@ async function downloadSimilarityPdf(
 
   await onProgress("dl-step2: looking for download button");
 
-  // First try attribute-based selectors (fast path).
-  let menuOpened = await tryClickInAnyFrame(viewer, SEL.downloadButton, 8_000);
+  // Helper: click an element reliably.
+  // The Turnitin toolbar uses <div role="button"> elements.  Plain Playwright
+  // .click() silently fails on these when CSS sets pointer-events:none or the
+  // element is off-screen.  We therefore try three escalating strategies:
+  //   1. force:true (bypasses viewport / pointer-event checks)
+  //   2. native dispatchEvent (fires real DOM click that React handles)
+  //   3. evaluate .click() (calls the DOM method directly)
+  async function forceClickElement(loc: import("playwright").Locator): Promise<void> {
+    const clicked = await loc.click({ timeout: 3_000, force: true }).then(() => true).catch(() => false);
+    if (!clicked) {
+      await loc.evaluate((el) =>
+        el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window })),
+      ).catch(() => {});
+    }
+  }
 
+  // Fast path: target the button directly by its known Turnitin class names.
+  // The confirmed HTML is:
+  //   <div role="button" title="Download" class="... tii-icon-download sidebar-download-button ...">
+  const DL_BTN_SEL = [
+    '[class*="tii-icon-download"]',
+    '[class*="sidebar-download-button"]',
+    '[title="Download"]',
+  ].join(", ");
+
+  let menuOpened = false;
+  const fastDeadline = Date.now() + 12_000;
+  while (Date.now() < fastDeadline && !menuOpened) {
+    for (const f of viewer.frames()) {
+      const n = await f.locator(DL_BTN_SEL).count().catch(() => 0);
+      if (n > 0) {
+        await onProgress(`dl-step2: found download button (count=${n}), clicking`);
+        await forceClickElement(f.locator(DL_BTN_SEL).first());
+        await viewer.waitForTimeout(2_500);
+        for (const fr of viewer.frames()) {
+          if ((await fr.locator(SEL_DL_OPTION).count().catch(() => 0)) > 0) {
+            menuOpened = true;
+            break;
+          }
+        }
+        if (menuOpened) break;
+        await onProgress("dl-step2: clicked but menu not yet visible, retrying");
+      }
+    }
+    if (!menuOpened) await viewer.waitForTimeout(500);
+  }
+
+  // Probe fallback: iterate every <button> and [role="button"] in the main frame.
+  // Only reached if the fast path's known selectors didn't match — e.g. if Turnitin
+  // changes class names in a future deployment.
   if (!menuOpened) {
-    // Probe fallback: click BOTH <button> and role="button" elements in the
-    // MAIN viewer frame only.  We deliberately skip sub-iframes because the
-    // document content iframe contains hundreds of elements whose clicks can
-    // cause page navigation/close and crash the process.  The download toolbar
-    // is always rendered in the top-level frame.
-    await onProgress("dl-step2: no labelled button found — probing main-frame buttons and [role=button] for download menu");
+    await onProgress("dl-step2: fast path missed — probing main-frame buttons and [role=button]");
     const mainFrame = viewer.mainFrame();
     const btns = await mainFrame.locator("button, [role='button']").all().catch(() => [] as Locator[]);
-    await onProgress(`dl-step2: found ${btns.length} clickable elements to probe`);
+    await onProgress(`dl-step2: probing ${btns.length} elements`);
     for (const btn of btns) {
       if (viewer.isClosed()) break;
       const beforeUrl = viewer.url();
       try {
-        // force:true bypasses the "element must be in view / stable" check so
-        // we can click toolbar items that may be partially off-screen.
-        await btn.click({ timeout: 2_000, force: true });
+        await forceClickElement(btn);
         await viewer.waitForTimeout(2_000);
         if (viewer.isClosed()) break;
-        // If the page navigated away, go back and skip this button.
         if (viewer.url() !== beforeUrl) {
           await viewer.goBack({ timeout: 10_000 }).catch(() => {});
           continue;
         }
-        // Check all frames for a download-menu option.
         for (const fr of viewer.frames()) {
           if ((await fr.locator(SEL_DL_OPTION).count().catch(() => 0)) > 0) {
             menuOpened = true;
@@ -561,7 +599,6 @@ async function downloadSimilarityPdf(
         if (menuOpened) break;
       } catch {
         if (viewer.isClosed()) break;
-        /* button not interactable or stale — try next */
       }
     }
   }
@@ -569,20 +606,18 @@ async function downloadSimilarityPdf(
   if (!menuOpened) {
     if (!viewer.isClosed()) await dumpPageControls(viewer, onProgress);
     throw new Error(
-      "Probed all main-frame buttons in the Turnitin viewer but no download menu appeared. " +
-      "See [diag] lines above.",
+      "Could not open the Turnitin download menu — see [diag] lines above.",
     );
   }
 
   await viewer.waitForTimeout(500);
 
   // ── Step 3: click the download option inside the menu ───────────────────────
-  await onProgress(`dl-step3: clicking download option in menu`);
+  await onProgress("dl-step3: clicking 'Current View' download option");
   if (!(await tryClickInAnyFrame(viewer, SEL_DL_OPTION, 15_000))) {
     if (!viewer.isClosed()) await dumpPageControls(viewer, onProgress);
     throw new Error(
-      "Download menu opened but no recognised option found. " +
-      "See [diag] lines above.",
+      "Download menu opened but 'Current View' option not found — see [diag] lines above.",
     );
   }
 

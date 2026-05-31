@@ -57,13 +57,27 @@ async function locateInAnyFrame(page: Page, sel: string): Promise<Frame | null> 
   return null;
 }
 
+async function forceClick(page: Page, sel: string): Promise<boolean> {
+  for (const f of page.frames()) {
+    const n = await f.locator(sel).count().catch(() => 0);
+    if (n > 0) {
+      const loc = f.locator(sel).first();
+      const ok = await loc.click({ timeout: 3_000, force: true }).then(() => true).catch(() => false);
+      if (!ok) {
+        await loc.evaluate((el) =>
+          el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window })),
+        ).catch(() => {});
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
 async function clickAnywhere(page: Page, sel: string, ms: number): Promise<boolean> {
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
-    const f = await locateInAnyFrame(page, sel);
-    if (f) {
-      try { await f.locator(sel).first().click({ timeout: 5_000 }); return true; } catch { /* retry */ }
-    }
+    if (await forceClick(page, sel)) return true;
     await page.waitForTimeout(500);
   }
   return false;
