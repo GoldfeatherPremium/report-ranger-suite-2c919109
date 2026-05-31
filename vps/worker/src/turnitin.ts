@@ -74,14 +74,18 @@ const SEL = {
   ].join(", "),
 
   // ── Viewer (ev.turnitin.com/app/carta/e) — download icon in right panel ──────
+  // The actual element is <div role="button" title="Download" class="... tii-icon-download sidebar-download-button ...">
+  // Keep a wide fallback net for future Turnitin UI changes.
   downloadButton: [
-    'button[aria-label="Download"]',
-    'button[aria-label*="download" i]',
-    'button[title*="Download" i]',
+    '[class*="tii-icon-download"]',
+    '[class*="sidebar-download-button"]',
+    '[class*="sidebar-download" i]',
+    '[title="Download"]',
+    '[title="Download" i]',
+    '[aria-label="Download"]',
+    '[aria-label*="download" i]',
     'button[data-testid*="download" i]',
     'button[class*="download" i]',
-    '[aria-label="Download report"]',
-    'a[aria-label*="download" i]',
   ].join(", "),
 
   // ── Download popup — "Current View" option ──────────────────────────────────
@@ -505,9 +509,18 @@ async function downloadSimilarityPdf(
   // The viewer is a React SPA — wait for toolbar to fully render.
   await viewer.waitForTimeout(6_000);
 
+  // Move the mouse to the right panel area so any auto-hiding toolbar becomes
+  // visible/active before we start looking for the download button.
+  await viewer.mouse.move(1280, 450).catch(() => {});
+  await viewer.waitForTimeout(1_000);
+
   // ── Steps 2+3: find download button → open menu → click download option ─────
   // Register the download listener NOW, before any clicking, so we never miss it.
+  // IMPORTANT: attach .catch() immediately so that if the viewer page closes
+  // during the probe, the rejected promise doesn't become an unhandled rejection
+  // and crash the Node process.
   const downloadPromise = viewer.waitForEvent("download", { timeout: 120_000 });
+  downloadPromise.catch(() => {});  // suppress unhandled-rejection crash
 
   await onProgress("dl-step2: looking for download button");
 
@@ -515,31 +528,48 @@ async function downloadSimilarityPdf(
   let menuOpened = await tryClickInAnyFrame(viewer, SEL.downloadButton, 8_000);
 
   if (!menuOpened) {
-    // Probe fallback: click every button in the viewer one by one.
-    // After each click, check if a download-menu option appeared anywhere.
-    // This handles SVG-only icon buttons that have no aria-label or title.
-    await onProgress("dl-step2: no labelled button found — probing all buttons for download menu");
-    outer: for (const f of viewer.frames()) {
-      const btns = await f.locator("button").all().catch(() => [] as Locator[]);
-      for (const btn of btns) {
-        try {
-          await btn.click({ timeout: 2_000 });
-          await viewer.waitForTimeout(1_200);
-          for (const fr of viewer.frames()) {
-            if ((await fr.locator(SEL_DL_OPTION).count().catch(() => 0)) > 0) {
-              menuOpened = true;
-              break outer;
-            }
+    // Probe fallback: click BOTH <button> and role="button" elements in the
+    // MAIN viewer frame only.  We deliberately skip sub-iframes because the
+    // document content iframe contains hundreds of elements whose clicks can
+    // cause page navigation/close and crash the process.  The download toolbar
+    // is always rendered in the top-level frame.
+    await onProgress("dl-step2: no labelled button found — probing main-frame buttons and [role=button] for download menu");
+    const mainFrame = viewer.mainFrame();
+    const btns = await mainFrame.locator("button, [role='button']").all().catch(() => [] as Locator[]);
+    await onProgress(`dl-step2: found ${btns.length} clickable elements to probe`);
+    for (const btn of btns) {
+      if (viewer.isClosed()) break;
+      const beforeUrl = viewer.url();
+      try {
+        // force:true bypasses the "element must be in view / stable" check so
+        // we can click toolbar items that may be partially off-screen.
+        await btn.click({ timeout: 2_000, force: true });
+        await viewer.waitForTimeout(2_000);
+        if (viewer.isClosed()) break;
+        // If the page navigated away, go back and skip this button.
+        if (viewer.url() !== beforeUrl) {
+          await viewer.goBack({ timeout: 10_000 }).catch(() => {});
+          continue;
+        }
+        // Check all frames for a download-menu option.
+        for (const fr of viewer.frames()) {
+          if ((await fr.locator(SEL_DL_OPTION).count().catch(() => 0)) > 0) {
+            menuOpened = true;
+            break;
           }
-        } catch { /* not interactable or stale — try next */ }
+        }
+        if (menuOpened) break;
+      } catch {
+        if (viewer.isClosed()) break;
+        /* button not interactable or stale — try next */
       }
     }
   }
 
   if (!menuOpened) {
-    await dumpPageControls(viewer, onProgress);
+    if (!viewer.isClosed()) await dumpPageControls(viewer, onProgress);
     throw new Error(
-      "Probed all buttons in the Turnitin viewer but no download menu appeared. " +
+      "Probed all main-frame buttons in the Turnitin viewer but no download menu appeared. " +
       "See [diag] lines above.",
     );
   }
@@ -549,7 +579,7 @@ async function downloadSimilarityPdf(
   // ── Step 3: click the download option inside the menu ───────────────────────
   await onProgress(`dl-step3: clicking download option in menu`);
   if (!(await tryClickInAnyFrame(viewer, SEL_DL_OPTION, 15_000))) {
-    await dumpPageControls(viewer, onProgress);
+    if (!viewer.isClosed()) await dumpPageControls(viewer, onProgress);
     throw new Error(
       "Download menu opened but no recognised option found. " +
       "See [diag] lines above.",

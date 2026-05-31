@@ -27,10 +27,14 @@ const SEL_SIMILARITY = [
   'a:has-text("%")', 'div[class*="similarity" i]',
 ].join(", ");
 const SEL_DOWNLOAD = [
-  'button[aria-label="Download"]', 'button[aria-label*="download" i]',
-  'button[title*="Download" i]', 'button[data-testid*="download" i]',
-  'button[class*="download" i]', '[aria-label="Download report"]',
-  'a[aria-label*="download" i]',
+  '[class*="tii-icon-download"]',
+  '[class*="sidebar-download-button"]',
+  '[class*="sidebar-download" i]',
+  '[title="Download"]',
+  '[aria-label="Download"]',
+  '[aria-label*="download" i]',
+  'button[data-testid*="download" i]',
+  'button[class*="download" i]',
 ].join(", ");
 const SEL_CURRENT_VIEW = [
   'button:has-text("Current View")', 'a:has-text("Current View")',
@@ -208,12 +212,16 @@ async function main() {
     await viewer.waitForLoadState("domcontentloaded", { timeout: 60_000 }).catch(() => {});
     log(`viewer: ${viewer.url()}`);
 
-    log("waiting 4 s for viewer SPA to render…");
-    await viewer.waitForTimeout(4_000);
+    log("waiting 6 s for viewer SPA to render…");
+    await viewer.waitForTimeout(6_000);
+
+    // Hover right panel so any auto-hiding toolbar becomes visible.
+    await viewer.mouse.move(1280, 450).catch(() => {});
+    await viewer.waitForTimeout(1_000);
 
     // ── Download icon ─────────────────────────────────────────────────────────
     log("clicking download icon…");
-    if (!(await clickAnywhere(viewer, SEL_DOWNLOAD, 30_000))) {
+    if (!(await clickAnywhere(viewer, SEL_DOWNLOAD, 15_000))) {
       await dump(viewer);
       throw new Error("Download icon not found — share [diag] output above");
     }
