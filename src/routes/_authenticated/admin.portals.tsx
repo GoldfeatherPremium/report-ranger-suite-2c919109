@@ -79,7 +79,7 @@ function PortalsPage() {
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-2xl font-semibold">Portal configurations</h2>
           <p className="mt-1 text-sm text-muted-foreground">Define the external portals the worker drives.</p>
