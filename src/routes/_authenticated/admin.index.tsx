@@ -97,8 +97,8 @@ function AdminOverview() {
           Each row is a worker process on your Contabo VPS heartbeating into the database.
           If this is empty, no worker is connected — check the systemd service on the VPS.
         </p>
-        <div className="mt-4 overflow-hidden rounded-lg border">
-          <table className="w-full text-sm">
+        <div className="mt-4 overflow-x-auto rounded-lg border">
+          <table className="w-full min-w-[560px] text-sm">
             <thead className="border-b bg-muted/40 text-left text-xs uppercase text-muted-foreground">
               <tr>
                 <th className="px-4 py-2">Worker ID</th>
