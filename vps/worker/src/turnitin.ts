@@ -482,21 +482,45 @@ async function downloadSimilarityPdf(
   await viewer.waitForLoadState("domcontentloaded", { timeout: 60_000 }).catch(() => {});
   await onProgress(`dl-step1 done: viewer url=${viewer.url()}`);
 
-  // The viewer is a React SPA; give it time to hydrate and render controls.
-  await viewer.waitForTimeout(4_000);
+  // The viewer is a React SPA — wait generously for the toolbar to fully render.
+  await viewer.waitForTimeout(6_000);
 
   // ── Step 2: click the download icon in the viewer's right panel ─────────────
-  await onProgress("dl-step2: clicking download icon button in viewer right panel");
-  if (!(await tryClickInAnyFrame(viewer, SEL.downloadButton, 30_000))) {
+  // First try attribute-based selectors (aria-label, title, data-testid, etc.).
+  // If none match (unlabelled SVG-only buttons), fall back to probing every button
+  // in the viewer: click each one and check whether "Current View" appears.
+  await onProgress("dl-step2: looking for download button");
+  let downloadClicked = await tryClickInAnyFrame(viewer, SEL.downloadButton, 8_000);
+
+  if (!downloadClicked) {
+    await onProgress("dl-step2: no labelled download button found — probing all buttons");
+    outer: for (const f of viewer.frames()) {
+      const btns = await f.locator("button").all().catch(() => [] as import("playwright").Locator[]);
+      for (const btn of btns) {
+        try {
+          await btn.click({ timeout: 2_000 });
+          await viewer.waitForTimeout(600);
+          // If "Current View" appeared anywhere, this was the download button.
+          for (const fr of viewer.frames()) {
+            const n = await fr.locator(SEL.currentViewOption).count().catch(() => 0);
+            if (n > 0) { downloadClicked = true; break outer; }
+          }
+        } catch { /* button not interactable, try next */ }
+      }
+    }
+  }
+
+  if (!downloadClicked) {
     await dumpPageControls(viewer, onProgress);
     throw new Error(
-      "Cannot find the download icon button in the Turnitin viewer. " +
-      "See [diag] lines above — share them to tune SEL.downloadButton.",
+      "Cannot find the download button in the Turnitin viewer — " +
+      "none of the known selectors matched and probing all buttons did not reveal a 'Current View' menu. " +
+      "See [diag] lines above.",
     );
   }
 
   // Give the Download popup a moment to animate in.
-  await viewer.waitForTimeout(1_000);
+  await viewer.waitForTimeout(500);
 
   // ── Step 3: click "Current View" in the Download popup ──────────────────────
   await onProgress("dl-step3: clicking 'Current View' in download popup");
