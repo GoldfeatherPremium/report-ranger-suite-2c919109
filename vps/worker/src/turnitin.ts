@@ -1,4 +1,4 @@
-import { chromium, Browser, Page, Frame } from "playwright";
+import { chromium, Browser, Page, Frame, type Locator } from "playwright";
 import { writeFile, mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -461,6 +461,26 @@ async function downloadSimilarityPdf(
 ): Promise<Buffer> {
   const ctx = page.context();
 
+  // Broad selector for any download-menu option across Turnitin viewer versions.
+  // Covers: "Current View", "Current Page", role="menuitem" variants, data attrs.
+  const SEL_DL_OPTION = [
+    '[role="menuitem"]:has-text("Current")',
+    '[role="option"]:has-text("Current")',
+    'li:has-text("Current View")',
+    'li:has-text("Current Page")',
+    'button:has-text("Current View")',
+    'button:has-text("Current Page")',
+    'a:has-text("Current View")',
+    'a:has-text("Current Page")',
+    'span:has-text("Current View")',
+    'span:has-text("Current Page")',
+    '[role="menuitem"]:has-text("PDF")',
+    '[role="menuitem"]:has-text("Similarity")',
+    '[data-testid*="current-view" i]',
+    '[data-testid*="current-page" i]',
+    '[class*="download-option" i]',
+  ].join(", ");
+
   // ── Step 1: open the similarity viewer ──────────────────────────────────────
   await onProgress("dl-step1: clicking similarity score link to open viewer");
   const newPagePromise = ctx.waitForEvent("page", { timeout: 60_000 }).catch(() => null);
@@ -482,33 +502,57 @@ async function downloadSimilarityPdf(
   await viewer.waitForLoadState("domcontentloaded", { timeout: 60_000 }).catch(() => {});
   await onProgress(`dl-step1 done: viewer url=${viewer.url()}`);
 
-  // The viewer is a React SPA; give it time to hydrate and render controls.
-  await viewer.waitForTimeout(4_000);
+  // The viewer is a React SPA — wait for toolbar to fully render.
+  await viewer.waitForTimeout(6_000);
 
-  // ── Step 2: click the download icon in the viewer's right panel ─────────────
-  await onProgress("dl-step2: clicking download icon button in viewer right panel");
-  if (!(await tryClickInAnyFrame(viewer, SEL.downloadButton, 30_000))) {
+  // ── Steps 2+3: find download button → open menu → click download option ─────
+  // Register the download listener NOW, before any clicking, so we never miss it.
+  const downloadPromise = viewer.waitForEvent("download", { timeout: 120_000 });
+
+  await onProgress("dl-step2: looking for download button");
+
+  // First try attribute-based selectors (fast path).
+  let menuOpened = await tryClickInAnyFrame(viewer, SEL.downloadButton, 8_000);
+
+  if (!menuOpened) {
+    // Probe fallback: click every button in the viewer one by one.
+    // After each click, check if a download-menu option appeared anywhere.
+    // This handles SVG-only icon buttons that have no aria-label or title.
+    await onProgress("dl-step2: no labelled button found — probing all buttons for download menu");
+    outer: for (const f of viewer.frames()) {
+      const btns = await f.locator("button").all().catch(() => [] as Locator[]);
+      for (const btn of btns) {
+        try {
+          await btn.click({ timeout: 2_000 });
+          await viewer.waitForTimeout(1_200);
+          for (const fr of viewer.frames()) {
+            if ((await fr.locator(SEL_DL_OPTION).count().catch(() => 0)) > 0) {
+              menuOpened = true;
+              break outer;
+            }
+          }
+        } catch { /* not interactable or stale — try next */ }
+      }
+    }
+  }
+
+  if (!menuOpened) {
     await dumpPageControls(viewer, onProgress);
     throw new Error(
-      "Cannot find the download icon button in the Turnitin viewer. " +
-      "See [diag] lines above — share them to tune SEL.downloadButton.",
+      "Probed all buttons in the Turnitin viewer but no download menu appeared. " +
+      "See [diag] lines above.",
     );
   }
 
-  // Give the Download popup a moment to animate in.
-  await viewer.waitForTimeout(1_000);
+  await viewer.waitForTimeout(500);
 
-  // ── Step 3: click "Current View" in the Download popup ──────────────────────
-  await onProgress("dl-step3: clicking 'Current View' in download popup");
-
-  // Register the download listener BEFORE clicking so we never miss the event.
-  const downloadPromise = viewer.waitForEvent("download", { timeout: 60_000 });
-
-  if (!(await tryClickInAnyFrame(viewer, SEL.currentViewOption, 15_000))) {
+  // ── Step 3: click the download option inside the menu ───────────────────────
+  await onProgress(`dl-step3: clicking download option in menu`);
+  if (!(await tryClickInAnyFrame(viewer, SEL_DL_OPTION, 15_000))) {
     await dumpPageControls(viewer, onProgress);
     throw new Error(
-      "Cannot find the 'Current View' option in the Download popup. " +
-      "See [diag] lines above — share them to tune SEL.currentViewOption.",
+      "Download menu opened but no recognised option found. " +
+      "See [diag] lines above.",
     );
   }
 
