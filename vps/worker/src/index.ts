@@ -5,13 +5,18 @@ import {
 } from "./supabase.js";
 import { submitToTurnitin } from "./turnitin.js";
 
+function envNum(key: string, fallback: number): number {
+  const v = Number(process.env[key]);
+  return v > 0 ? v : fallback;
+}
+
 const WORKER_ID = process.env.WORKER_ID ?? `worker-${process.pid}`;
 const HEADLESS = (process.env.HEADLESS ?? "true") === "true";
-const SUBMISSION_TIMEOUT_MS = Number(process.env.SUBMISSION_TIMEOUT_MS ?? 1_800_000);
-const UPLOAD_TIMEOUT_MS = Number(process.env.UPLOAD_TIMEOUT_MS ?? 600_000);
-const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? 15_000);
-const CLAIM_IDLE_MS = Number(process.env.CLAIM_IDLE_MS ?? 10_000);
-const HEARTBEAT_MS = Number(process.env.HEARTBEAT_MS ?? 30_000);
+const SUBMISSION_TIMEOUT_MS = envNum("SUBMISSION_TIMEOUT_MS", 900_000);   // 15 min
+const UPLOAD_TIMEOUT_MS     = envNum("UPLOAD_TIMEOUT_MS",     600_000);   // 10 min
+const POLL_INTERVAL_MS      = envNum("POLL_INTERVAL_MS",       30_000);   // 30 s
+const CLAIM_IDLE_MS         = envNum("CLAIM_IDLE_MS",          10_000);
+const HEARTBEAT_MS          = envNum("HEARTBEAT_MS",           30_000);
 
 let activeJobs = 0;
 let shuttingDown = false;
