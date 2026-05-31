@@ -35,5 +35,10 @@ npm install
 npm run build
 npm prune --omit=dev
 
+# Refresh the systemd unit too, in case the service file changed in git.
+sed "s|__WORKER_DIR__|$WORKER_DIR|g" "$REPO_DIR/vps/turnitin-worker.service" \
+  > /etc/systemd/system/turnitin-worker.service
+systemctl daemon-reload
+
 systemctl restart turnitin-worker
 echo "auto-update: redeployed worker to $REMOTE and restarted"
