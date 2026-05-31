@@ -17,6 +17,11 @@ export type Job = {
   updated_at: string;
   finished_at: string | null;
   started_at: string | null;
+  queued_at: string | null;
+  slot_id: string | null;
+  turnitin_submission_id: string | null;
+  worker_id: string | null;
+  last_polled_at: string | null;
 };
 
 export const ACTIVE_STATUSES: JobStatus[] = ["pending", "queued", "processing"];
@@ -83,6 +88,8 @@ export async function retryJob(id: string) {
   return supabase.from("jobs").update({
     status: "queued",
     error: null,
+    attempts: 0,
+    worker_id: null,
     queued_at: new Date().toISOString(),
   }).eq("id", id);
 }

@@ -14,9 +14,6 @@ import { chromium } from "playwright";
 import { writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { supabase, getSlotInfo } from "./supabase.js";
-import {
-  submitToTurnitin,
-} from "./turnitin.js";
 
 // The dashboard page that already has a similarity score
 const DASHBOARD_URL =
