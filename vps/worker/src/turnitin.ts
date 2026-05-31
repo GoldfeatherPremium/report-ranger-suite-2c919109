@@ -189,11 +189,10 @@ export async function submitToTurnitin(opts: {
 
     // ── RESUME PATH: document already submitted in a prior attempt ─────────────
     // Skip the entire upload modal — the document is already in Turnitin.
-    // Navigate to the assignment dashboard and poll for the similarity score.
+    // Just wait for the similarity score on this same slot's dashboard.
     if (existingSubmissionId) {
       await onProgress(`resuming score-wait (already submitted, id=${existingSubmissionId})`);
-      const dashboardUrl = slot.submit_url ?? page.url();
-      const submissionId = await waitForSimilarity(page, dashboardUrl, submissionTimeoutMs, pollIntervalMs, onProgress);
+      const submissionId = await waitForSimilarity(page, submissionTimeoutMs, pollIntervalMs, onProgress);
       const pdf = await downloadSimilarityPdf(page, onProgress);
       return { pdf, submissionId: submissionId ?? existingSubmissionId };
     }
@@ -245,25 +244,15 @@ export async function submitToTurnitin(opts: {
     await tryClickInAnyFrame(page, SEL.closeModalButton, 10_000);
     await onProgress("submission complete; dialog closed");
 
-    // Save the dashboard URL we are on now — this is where the similarity % will appear.
-    const dashboardUrl = page.url() || slot.submit_url || "";
-
     // Immediately save that this document has been submitted.  We extract the
     // submission_id from any <a href="...oid=N..."> link on the dashboard if
     // available; otherwise we use a sentinel so retries know to skip re-upload.
     const sentinelId = await extractSubmissionIdFromPage(page) ?? "TII:submitted";
     await onSubmitted?.(sentinelId);
 
-    // ── Step 7: sleep 5 min, then poll for similarity score ────────────────────
-    // Turnitin needs several minutes to process the document before the
-    // similarity % appears. Sleep first, then re-navigate to the dashboard and
-    // poll every POLL_INTERVAL_MS for up to SUBMISSION_TIMEOUT_MS total.
-    const INITIAL_SLEEP_MS = 5 * 60 * 1000;
-    await onProgress(`sleeping ${Math.round(INITIAL_SLEEP_MS / 60_000)} min before checking similarity score…`);
-    await page.waitForTimeout(INITIAL_SLEEP_MS);
-    await onProgress(`woke up — checking similarity score at: ${dashboardUrl}`);
-
-    const submissionId = await waitForSimilarity(page, dashboardUrl, submissionTimeoutMs, pollIntervalMs, onProgress);
+    // ── Step 7: wait for the similarity score on the dashboard ─────────────────
+    await onProgress("waiting for similarity score");
+    const submissionId = await waitForSimilarity(page, submissionTimeoutMs, pollIntervalMs, onProgress);
 
     // ── Step 8: open viewer and download the PDF ───────────────────────────────
     await onProgress("downloading similarity PDF");
@@ -426,43 +415,29 @@ async function extractSubmissionIdFromPage(page: Page): Promise<string | null> {
   return null;
 }
 
-async function waitForSimilarity(
-  page: Page,
-  dashboardUrl: string,
-  timeoutMs: number,
-  pollMs: number,
-  onProgress: (m: string) => Promise<void>,
-): Promise<string | null> {
+async function waitForSimilarity(page: Page, timeoutMs: number, pollMs: number, onProgress: (m: string) => Promise<void>): Promise<string | null> {
   const deadline = Date.now() + timeoutMs;
   let submissionId: string | null = null;
 
   while (Date.now() < deadline) {
-    // Navigate to the dashboard URL fresh each cycle — more reliable than
-    // reload() which sometimes lands on a stale or redirected page.
     try {
-      await page.goto(dashboardUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
-      await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {});
-    } catch { /* ignore nav errors — try next iteration */ }
+      await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 });
+    } catch { /* ignore */ }
 
-    // Try to extract submission id from the URL or from any paper link on the page
+    // Try to extract submission id from URL or from a paper link on the dashboard
     const url = page.url();
     const m = url.match(/oid=(\d+)/) ?? url.match(/submission[_-]?id=(\d+)/i);
     if (m) submissionId = m[1];
     if (!submissionId) submissionId = await extractSubmissionIdFromPage(page);
 
-    // Check all frames for a similarity percentage
-    let similarityText = "";
-    for (const f of page.frames()) {
-      const txt = await f.locator(SEL.similarityCell).first().innerText({ timeout: 3_000 }).catch(() => "");
-      if (/\d+\s*%/.test(txt)) { similarityText = txt; break; }
-    }
-    if (similarityText) {
-      await onProgress(`similarity ready: ${similarityText.trim()}`);
+    // Look for a percentage on the similarity cell
+    const text = await page.locator(SEL.similarityCell).first().innerText({ timeout: 5_000 }).catch(() => "");
+    if (/\d+\s*%/.test(text)) {
+      await onProgress(`similarity ready: ${text.trim()}`);
       return submissionId;
     }
 
-    const remaining = Math.round((deadline - Date.now()) / 1000);
-    await onProgress(`similarity not ready yet — next check in ${Math.round(pollMs / 1000)}s (${remaining}s remaining)`);
+    await onProgress(`not ready yet, sleeping ${Math.round(pollMs / 1000)}s`);
     await new Promise((r) => setTimeout(r, pollMs));
   }
   throw new Error("Timed out waiting for similarity score");

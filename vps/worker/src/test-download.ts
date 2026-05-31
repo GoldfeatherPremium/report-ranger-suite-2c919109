@@ -1,37 +1,74 @@
+/**
+ * Test the download flow only.
+ * Logs in via the slot's credentials, navigates to the dashboard URL,
+ * finds the similarity %, clicks through to the viewer, and downloads the PDF.
+ *
+ * Usage:
+ *   npx tsx src/test-download.ts [slot_id]
+ *
+ * slot_id is optional — first active slot is used when omitted.
+ * Output: test-download-output.pdf in the worker directory.
+ */
+import "dotenv/config";
 import { chromium } from "playwright";
 import { writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { supabase, getSlotInfo } from "./supabase.js";
+import {
+  submitToTurnitin,
+} from "./turnitin.js";
 
-// ── Fill these in ─────────────────────────────────────────────────────────────
-const EMAIL    = process.env.TII_EMAIL    ?? "YOUR_EMAIL_HERE";
-const PASSWORD = process.env.TII_PASSWORD ?? "YOUR_PASSWORD_HERE";
-const LOGIN_URL    = "https://www.turnitin.com/login_page.asp";
-const DASHBOARD_URL = "https://www.turnitin.com/assignment/type/paper/dashboard/167064674?lang=en_us";
+// The dashboard page that already has a similarity score
+const DASHBOARD_URL =
+  "https://www.turnitin.com/assignment/type/paper/dashboard/167064674?lang=en_us";
 const OUT_FILE = join(process.cwd(), "test-download-output.pdf");
-// ─────────────────────────────────────────────────────────────────────────────
+const HEADLESS = (process.env.HEADLESS ?? "true") === "true";
 
 const SEL_SIMILARITY = [
-  '.or-link', '[data-similarity]', '.similarity-score',
+  ".or-link", "[data-similarity]", ".similarity-score",
   'a[href*="viewer"]', 'a[href*="ev.turnitin"]',
   'a:has-text("%")', 'div[class*="similarity" i]',
 ].join(", ");
-
 const SEL_DOWNLOAD = [
   'button[aria-label="Download"]', 'button[aria-label*="download" i]',
   'button[title*="Download" i]', 'button[data-testid*="download" i]',
   'button[class*="download" i]', '[aria-label="Download report"]',
   'a[aria-label*="download" i]',
 ].join(", ");
-
 const SEL_CURRENT_VIEW = [
   'button:has-text("Current View")', 'a:has-text("Current View")',
   'li:has-text("Current View")', 'span:has-text("Current View")',
   '[data-testid*="current-view" i]',
 ].join(", ");
 
-function log(msg: string) { console.log(`[${new Date().toTimeString().slice(0,8)}] ${msg}`); }
+type Page = import("playwright").Page;
+type Frame = import("playwright").Frame;
 
-async function dump(page: import("playwright").Page) {
+function log(msg: string) {
+  console.log(`[${new Date().toTimeString().slice(0, 8)}] ${msg}`);
+}
+
+async function locateInAnyFrame(page: Page, sel: string): Promise<Frame | null> {
+  for (const f of page.frames()) {
+    const n = await f.locator(sel).count().catch(() => 0);
+    if (n > 0) return f;
+  }
+  return null;
+}
+
+async function clickAnywhere(page: Page, sel: string, ms: number): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    const f = await locateInAnyFrame(page, sel);
+    if (f) {
+      try { await f.locator(sel).first().click({ timeout: 5_000 }); return true; } catch { /* retry */ }
+    }
+    await page.waitForTimeout(500);
+  }
+  return false;
+}
+
+async function dump(page: Page) {
   log(`[diag] url=${page.url()}  frames=${page.frames().length}`);
   for (const f of page.frames()) {
     const items = await f.$$eval(
@@ -42,86 +79,93 @@ async function dump(page: import("playwright").Page) {
           e.tagName.toLowerCase(),
           e.type ? `type=${e.type}` : "",
           e.name ? `name=${e.name}` : "",
-          e.id   ? `id=${e.id}` : "",
+          e.id ? `id=${e.id}` : "",
           e.getAttribute("aria-label") ? `aria=${e.getAttribute("aria-label")}` : "",
-          e.getAttribute("href") ? `href=${(e.getAttribute("href") ?? "").slice(0,60)}` : "",
-          (e.textContent ?? "").trim().slice(0, 40) ? `txt=${(e.textContent ?? "").trim().slice(0,40)}` : "",
+          e.getAttribute("href") ? `href=${(e.getAttribute("href") ?? "").slice(0, 60)}` : "",
+          (e.textContent ?? "").trim().slice(0, 40)
+            ? `txt=${(e.textContent ?? "").trim().slice(0, 40)}` : "",
         ].filter(Boolean).join("  ");
       }),
     ).catch(() => [] as string[]);
     if (items.length) {
       log(`[diag] frame: ${f.url().slice(0, 90)}`);
-      items.forEach(i => log(`[diag]   <${i}>`));
+      items.forEach((i) => log(`[diag]   <${i}>`));
     }
   }
-}
-
-async function clickAnywhere(page: import("playwright").Page, sel: string, ms: number): Promise<boolean> {
-  const deadline = Date.now() + ms;
-  while (Date.now() < deadline) {
-    for (const f of page.frames()) {
-      const n = await f.locator(sel).count().catch(() => 0);
-      if (n > 0) {
-        try { await f.locator(sel).first().click({ timeout: 5_000 }); return true; } catch { /* retry */ }
-      }
-    }
-    await page.waitForTimeout(500);
-  }
-  return false;
 }
 
 async function main() {
-  if (EMAIL === "YOUR_EMAIL_HERE") {
-    console.error("Set TII_EMAIL and TII_PASSWORD env vars:\n  TII_EMAIL=x TII_PASSWORD=y npx tsx src/test-download.ts");
-    process.exit(1);
+  // Resolve slot
+  let slotId = process.argv[2] ?? "";
+  if (!slotId) {
+    const { data, error } = await supabase
+      .from("turnitin_slots")
+      .select("id, label")
+      .eq("is_active", true)
+      .limit(1)
+      .single();
+    if (error || !data) {
+      log(`ERROR: no active slot — ${error?.message}`);
+      process.exit(1);
+    }
+    slotId = data.id as string;
+    log(`Using first active slot: ${data.label} (${slotId})`);
   }
 
+  const slot = await getSlotInfo(slotId);
+  log(`Slot:      ${slot.slot_label}`);
+  log(`Email:     ${slot.email}`);
+  log(`Login URL: ${slot.login_url}`);
+  log(`Dashboard: ${DASHBOARD_URL}`);
+  log("─".repeat(60));
+
   const browser = await chromium.launch({
-    headless: true,
+    headless: HEADLESS,
     args: ["--no-sandbox", "--disable-dev-shm-usage"],
   });
   const ctx = await browser.newContext({
     acceptDownloads: true,
-    userAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    userAgent:
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     viewport: { width: 1366, height: 900 },
     locale: "en-US",
   });
   const page = await ctx.newPage();
 
   try {
-    // ── 1. Login ──────────────────────────────────────────────────────────────
-    log(`logging in at ${LOGIN_URL}`);
-    await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
+    // ── Login ─────────────────────────────────────────────────────────────────
+    log(`opening login: ${slot.login_url}`);
+    await page.goto(slot.login_url, { waitUntil: "domcontentloaded", timeout: 60_000 });
     await page.waitForLoadState("load", { timeout: 30_000 }).catch(() => {});
 
-    const emailSel = 'input[name="email"], input#email, input[type="email"], input[autocomplete="username"]';
-    const pwdSel   = 'input[name="password"], input#password, input[name="user_password"], input[type="password"]';
-    const btnSel   = 'button[type="submit"], input[type="submit"], button:has-text("Log in"), input[value="Log in"]';
+    const emailSel = 'input[name="email"], input#email, input[type="email"], input[name="user_email"], input[autocomplete="username"]';
+    const pwdSel = 'input[name="password"], input#password, input[name="user_password"], input[type="password"]';
+    const btnSel = 'button[type="submit"], input[type="submit"], button:has-text("Log in"), input[value="Log in"], input[name="Submit"]';
 
     // fill email
-    let filled = false;
-    const emailDeadline = Date.now() + 30_000;
-    while (Date.now() < emailDeadline && !filled) {
+    let ok = false;
+    const t1 = Date.now() + 30_000;
+    while (Date.now() < t1 && !ok) {
       for (const f of page.frames()) {
         const n = await f.locator(emailSel).count().catch(() => 0);
-        if (n > 0) { try { await f.locator(emailSel).first().fill(EMAIL, { timeout: 5_000 }); filled = true; break; } catch { /* */ } }
+        if (n > 0) { try { await f.locator(emailSel).first().fill(slot.email, { timeout: 5_000 }); ok = true; break; } catch { /**/ } }
       }
-      if (!filled) await page.waitForTimeout(500);
+      if (!ok) await page.waitForTimeout(500);
     }
-    if (!filled) { await dump(page); throw new Error("email field not found"); }
+    if (!ok) { await dump(page); throw new Error("email field not found — see [diag]"); }
     log("email filled");
 
     // fill password
-    filled = false;
-    const pwdDeadline = Date.now() + 15_000;
-    while (Date.now() < pwdDeadline && !filled) {
+    ok = false;
+    const t2 = Date.now() + 15_000;
+    while (Date.now() < t2 && !ok) {
       for (const f of page.frames()) {
         const n = await f.locator(pwdSel).count().catch(() => 0);
-        if (n > 0) { try { await f.locator(pwdSel).first().fill(PASSWORD, { timeout: 5_000 }); filled = true; break; } catch { /* */ } }
+        if (n > 0) { try { await f.locator(pwdSel).first().fill(slot.password, { timeout: 5_000 }); ok = true; break; } catch { /**/ } }
       }
-      if (!filled) await page.waitForTimeout(500);
+      if (!ok) await page.waitForTimeout(500);
     }
-    if (!filled) { await dump(page); throw new Error("password field not found"); }
+    if (!ok) { await dump(page); throw new Error("password field not found — see [diag]"); }
     log("password filled");
 
     await Promise.all([
@@ -130,14 +174,14 @@ async function main() {
     ]);
     log(`logged in — url: ${page.url()}`);
 
-    // ── 2. Go to dashboard ────────────────────────────────────────────────────
-    log(`opening dashboard: ${DASHBOARD_URL}`);
+    // ── Go to dashboard ───────────────────────────────────────────────────────
+    log(`navigating to dashboard: ${DASHBOARD_URL}`);
     await page.goto(DASHBOARD_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
     await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => {});
-    log(`dashboard url: ${page.url()}`);
+    log(`dashboard loaded — url: ${page.url()}`);
 
-    // ── 3. Find similarity % ──────────────────────────────────────────────────
-    log("looking for similarity % …");
+    // ── Find similarity % ─────────────────────────────────────────────────────
+    log("looking for similarity % in all frames…");
     let simText = "";
     for (const f of page.frames()) {
       const txt = await f.locator(SEL_SIMILARITY).first().innerText({ timeout: 3_000 }).catch(() => "");
@@ -146,12 +190,12 @@ async function main() {
     if (!simText) {
       log("similarity % not found — dumping page:");
       await dump(page);
-      throw new Error("Similarity % not visible — share the [diag] output above");
+      throw new Error("Similarity % not visible — share [diag] output above");
     }
-    log(`similarity found: "${simText.trim()}"`);
+    log(`similarity: "${simText.trim()}"`);
 
-    // ── 4. Click % → open viewer tab ─────────────────────────────────────────
-    log("clicking similarity % link …");
+    // ── Click % → viewer tab ──────────────────────────────────────────────────
+    log("clicking similarity link…");
     const newTabPromise = ctx.waitForEvent("page", { timeout: 60_000 }).catch(() => null);
     await page.locator(SEL_SIMILARITY).first().click({ timeout: 15_000 }).catch(async (e: unknown) => {
       await dump(page);
@@ -160,32 +204,31 @@ async function main() {
 
     let viewer = await newTabPromise;
     if (!viewer) {
-      log("no new tab — waiting for same-tab navigation to ev.turnitin.com …");
+      log("no new tab — waiting for same-tab navigation to ev.turnitin.com…");
       await page.waitForURL(/ev\.turnitin\.com/, { timeout: 30_000 }).catch(() => {});
       viewer = page;
     }
     await viewer.waitForLoadState("domcontentloaded", { timeout: 60_000 }).catch(() => {});
-    log(`viewer tab: ${viewer.url()}`);
+    log(`viewer: ${viewer.url()}`);
 
-    // SPA needs time to render controls
-    log("waiting 4 s for viewer SPA to render …");
+    log("waiting 4 s for viewer SPA to render…");
     await viewer.waitForTimeout(4_000);
 
-    // ── 5. Click download icon ────────────────────────────────────────────────
-    log("clicking download icon …");
+    // ── Download icon ─────────────────────────────────────────────────────────
+    log("clicking download icon…");
     if (!(await clickAnywhere(viewer, SEL_DOWNLOAD, 30_000))) {
       await dump(viewer);
-      throw new Error("Download icon not found — share the [diag] output above");
+      throw new Error("Download icon not found — share [diag] output above");
     }
     log("download popup open");
     await viewer.waitForTimeout(1_000);
 
-    // ── 6. Click "Current View" ───────────────────────────────────────────────
-    log("clicking 'Current View' …");
+    // ── Current View ──────────────────────────────────────────────────────────
+    log("clicking 'Current View'…");
     const dlEvent = viewer.waitForEvent("download", { timeout: 60_000 });
     if (!(await clickAnywhere(viewer, SEL_CURRENT_VIEW, 15_000))) {
       await dump(viewer);
-      throw new Error("'Current View' not found — share the [diag] output above");
+      throw new Error("'Current View' not found — share [diag] output above");
     }
 
     const dl = await dlEvent;
@@ -194,10 +237,8 @@ async function main() {
 
     const bytes = await readFile(dlPath);
     await writeFile(OUT_FILE, bytes);
-
     log("─".repeat(60));
-    log(`SUCCESS — ${OUT_FILE}`);
-    log(`          ${(bytes.length / 1024).toFixed(1)} KB`);
+    log(`SUCCESS — ${OUT_FILE}  (${(bytes.length / 1024).toFixed(1)} KB)`);
 
   } catch (err) {
     log(`FAILED: ${err instanceof Error ? err.message : String(err)}`);
