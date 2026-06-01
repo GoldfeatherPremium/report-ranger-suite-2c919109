@@ -52,6 +52,14 @@ const SEL = {
     'a:has-text("Submit to Turnitin")',
   ].join(", "),
 
+  // ── Slow-preview confirmation screen ─────────────────────────────────────────
+  // Turnitin sometimes skips the preview and shows an hourglass with:
+  // "You must click confirm to complete your upload."
+  confirmSlowPreview: [
+    'button:has-text("Confirm")',
+    'input[value="Confirm"]',
+  ].join(", "),
+
   // ── Submission Complete modal — close it ─────────────────────────────────────
   closeModalButton: [
     'button[aria-label="Close" i]',
@@ -275,13 +283,37 @@ export async function submitToTurnitin(opts: {
       throw new Error("Could not find the 'Upload and Review' button — see [diag] lines.");
     }
 
-    // ── Step 5: wait for the review screen, then Submit to Turnitin ─────────────
-    // Uploading can take 15s–5min depending on file size, so wait generously for
-    // the "Submit to Turnitin" button to appear.
-    await onProgress(`step5: waiting for review screen, then 'Submit to Turnitin' (up to ${Math.round(uploadTimeoutMs / 1000)}s)`);
-    if (!(await tryClickInAnyFrame(page, SEL.submitToTurnitinButton, uploadTimeoutMs))) {
-      await dumpPageControls(page, onProgress);
-      throw new Error("Could not find the 'Submit to Turnitin' button on the review screen — see [diag] lines.");
+    // ── Step 5: wait for review screen OR slow-preview confirm screen ────────────
+    // Normal path:   Review screen appears → "Submit to Turnitin" button
+    // Slow preview:  Preview times out → hourglass + "Confirm" button
+    //                ("You must click confirm to complete your upload.")
+    // Both paths converge at Step 6 (wait for "Submission Complete!").
+    await onProgress(`step5: waiting for 'Submit to Turnitin' or 'Confirm' (slow preview) — up to ${Math.round(uploadTimeoutMs / 1000)}s`);
+    {
+      const step5Deadline = Date.now() + uploadTimeoutMs;
+      let step5Done = false;
+      while (Date.now() < step5Deadline && !step5Done) {
+        const hasSubmit  = (await locateInAnyFrame(page, SEL.submitToTurnitinButton)) !== null;
+        const hasConfirm = (await locateInAnyFrame(page, SEL.confirmSlowPreview)) !== null;
+
+        if (hasSubmit) {
+          await onProgress("step5: review screen ready — clicking 'Submit to Turnitin'");
+          await tryClickInAnyFrame(page, SEL.submitToTurnitinButton, 10_000);
+          step5Done = true;
+        } else if (hasConfirm) {
+          await onProgress("step5: slow preview detected — clicking 'Confirm' to complete upload");
+          await tryClickInAnyFrame(page, SEL.confirmSlowPreview, 10_000);
+          step5Done = true;
+        } else {
+          await page.waitForTimeout(500);
+        }
+      }
+      if (!step5Done) {
+        await dumpPageControls(page, onProgress);
+        throw new Error(
+          "Could not find 'Submit to Turnitin' or 'Confirm' button after upload — see [diag] lines.",
+        );
+      }
     }
 
     // ── Step 6: confirm completion and close the modal ─────────────────────────
