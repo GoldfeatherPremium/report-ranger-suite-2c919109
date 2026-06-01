@@ -25,7 +25,6 @@ const SEL = {
     'button:has-text("Upload Submission")',
     'a:has-text("Upload Submission")',
     'input[value="Upload Submission"]',
-    'button:has-text("Submit")',
   ].join(", "),
 
   // ── "Submit File" modal ─────────────────────────────────────────────────────
@@ -72,14 +71,20 @@ const SEL = {
   ].join(", "),
 
   // ── Resubmit button (used slots — dashboard already has a previous paper) ───
-  // Appears as an upload/resubmit icon in the paper row actions column.
+  // Turnitin renders this as an icon input, image anchor, or text button.
   resubmitButton: [
     'input[value="Resubmit"]',
+    'input[value*="resubmit" i]',
     'input[name*="resubmit" i]',
     'input[title*="resubmit" i]',
+    'input[alt*="resubmit" i]',
     'a[href*="resubmit"]',
     'a[title*="resubmit" i]',
+    'a[class*="resubmit" i]',
+    'a:has(img[alt*="resubmit" i])',
+    'a:has(img[title*="resubmit" i])',
     'button:has-text("Resubmit")',
+    '[class*="resubmit" i]',
   ].join(", "),
 
   // ── "Confirm Resubmission" dialog ───────────────────────────────────────────
@@ -235,23 +240,26 @@ export async function submitToTurnitin(opts: {
     //   Used slot   → existing paper row shows a resubmit icon; clicking it
     //                 opens a "Confirm Resubmission" dialog before the same
     //                 "Submit File" modal appears.
-    await onProgress("step1: looking for 'Upload Submission' or resubmit button");
+    await onProgress("step1: looking for resubmit button or 'Upload Submission'");
+    await dumpPageControls(page, onProgress);
     {
-      const step1Deadline = Date.now() + 30_000;
+      const step1Deadline = Date.now() + 60_000;
       let step1Done = false;
       while (Date.now() < step1Deadline && !step1Done) {
-        const hasUpload   = (await locateInAnyFrame(page, SEL.uploadSubmissionButton)) !== null;
+        // Check resubmit FIRST — it is the more specific case and its selector
+        // must not be shadowed by the broad uploadSubmissionButton selector.
         const hasResubmit = (await locateInAnyFrame(page, SEL.resubmitButton)) !== null;
+        const hasUpload   = (await locateInAnyFrame(page, SEL.uploadSubmissionButton)) !== null;
 
-        if (hasUpload) {
-          await onProgress("step1: clicking 'Upload Submission' (fresh slot)");
-          await tryClickInAnyFrame(page, SEL.uploadSubmissionButton, 10_000);
-          step1Done = true;
-        } else if (hasResubmit) {
-          await onProgress("step1: existing paper detected — clicking resubmit icon");
+        if (hasResubmit) {
+          await onProgress("step1: existing paper detected — clicking resubmit button");
           await tryClickInAnyFrame(page, SEL.resubmitButton, 10_000);
           await onProgress("step1b: confirming resubmission dialog");
           await tryClickInAnyFrame(page, SEL.confirmResubmission, 15_000);
+          step1Done = true;
+        } else if (hasUpload) {
+          await onProgress("step1: clicking 'Upload Submission' (fresh slot)");
+          await tryClickInAnyFrame(page, SEL.uploadSubmissionButton, 10_000);
           step1Done = true;
         } else {
           await page.waitForTimeout(500);
@@ -260,7 +268,7 @@ export async function submitToTurnitin(opts: {
       if (!step1Done) {
         await dumpPageControls(page, onProgress);
         throw new Error(
-          "Could not find 'Upload Submission' button or resubmit icon on the dashboard. " +
+          "Could not find resubmit button or 'Upload Submission' button on the dashboard. " +
           "Check that the slot's submit_url is the assignment dashboard URL " +
           "(turnitin.com/assignment/type/paper/dashboard/<id>). See [diag] lines.",
         );
