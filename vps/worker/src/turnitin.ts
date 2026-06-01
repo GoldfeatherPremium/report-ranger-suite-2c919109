@@ -301,8 +301,20 @@ export async function submitToTurnitin(opts: {
           await tryClickInAnyFrame(page, SEL.submitToTurnitinButton, 10_000);
           step5Done = true;
         } else if (hasConfirm) {
-          await onProgress("step5: slow preview detected — clicking 'Confirm' to complete upload");
+          await onProgress("step5: slow preview detected — clicking 'Confirm'");
           await tryClickInAnyFrame(page, SEL.confirmSlowPreview, 10_000);
+          // Turnitin's "Confirm" dismisses the no-preview warning but still shows
+          // the Review screen with "Submit to Turnitin". Poll for it up to 20s.
+          const postConfirmDeadline = Date.now() + 20_000;
+          while (Date.now() < postConfirmDeadline) {
+            const hasSubmitNow = (await locateInAnyFrame(page, SEL.submitToTurnitinButton)) !== null;
+            if (hasSubmitNow) {
+              await onProgress("step5: 'Submit to Turnitin' appeared after Confirm — clicking it");
+              await tryClickInAnyFrame(page, SEL.submitToTurnitinButton, 10_000);
+              break;
+            }
+            await page.waitForTimeout(500);
+          }
           step5Done = true;
         } else {
           await page.waitForTimeout(500);
