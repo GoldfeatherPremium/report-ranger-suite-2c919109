@@ -72,6 +72,8 @@ const SEL = {
 
   // ── Resubmit button (used slots — dashboard already has a previous paper) ───
   // Turnitin renders this as an icon input, image anchor, or text button.
+  // Keep selectors attribute-specific; avoid broad class/tag wildcards that
+  // can match non-clickable elements before the real icon button.
   resubmitButton: [
     'input[value="Resubmit"]',
     'input[value*="resubmit" i]',
@@ -80,11 +82,9 @@ const SEL = {
     'input[alt*="resubmit" i]',
     'a[href*="resubmit"]',
     'a[title*="resubmit" i]',
-    'a[class*="resubmit" i]',
     'a:has(img[alt*="resubmit" i])',
     'a:has(img[title*="resubmit" i])',
     'button:has-text("Resubmit")',
-    '[class*="resubmit" i]',
   ].join(", "),
 
   // ── "Confirm Resubmission" dialog ───────────────────────────────────────────
