@@ -61,6 +61,24 @@ const SEL = {
     'button:has-text("×")',
   ].join(", "),
 
+  // ── Resubmit button (used slots — dashboard already has a previous paper) ───
+  // Appears as an upload/resubmit icon in the paper row actions column.
+  resubmitButton: [
+    'input[value="Resubmit"]',
+    'input[name*="resubmit" i]',
+    'input[title*="resubmit" i]',
+    'a[href*="resubmit"]',
+    'a[title*="resubmit" i]',
+    'button:has-text("Resubmit")',
+  ].join(", "),
+
+  // ── "Confirm Resubmission" dialog ───────────────────────────────────────────
+  confirmResubmission: [
+    'button:has-text("Confirm")',
+    'input[value="Confirm"]',
+    'a:has-text("Confirm")',
+  ].join(", "),
+
   // ── Assignment dashboard — the clickable similarity-score link (e.g. "20%") ──
   // Clicking it opens the viewer in a new tab (ev.turnitin.com/app/carta/e).
   similarityCell: [
@@ -202,14 +220,41 @@ export async function submitToTurnitin(opts: {
     }
 
     // ── Step 1: open the Submit File modal ─────────────────────────────────────
-    await onProgress("step1: clicking 'Upload Submission'");
-    if (!(await tryClickInAnyFrame(page, SEL.uploadSubmissionButton, 30_000))) {
-      await dumpPageControls(page, onProgress);
-      throw new Error(
-        "Could not find the 'Upload Submission' button on the assignment dashboard. " +
-        "Check that the slot's submit_url is the assignment dashboard URL " +
-        "(turnitin.com/assignment/type/paper/dashboard/<id>). See [diag] lines.",
-      );
+    // Two paths:
+    //   Fresh slot  → "Upload Submission" button is visible
+    //   Used slot   → existing paper row shows a resubmit icon; clicking it
+    //                 opens a "Confirm Resubmission" dialog before the same
+    //                 "Submit File" modal appears.
+    await onProgress("step1: looking for 'Upload Submission' or resubmit button");
+    {
+      const step1Deadline = Date.now() + 30_000;
+      let step1Done = false;
+      while (Date.now() < step1Deadline && !step1Done) {
+        const hasUpload   = (await locateInAnyFrame(page, SEL.uploadSubmissionButton)) !== null;
+        const hasResubmit = (await locateInAnyFrame(page, SEL.resubmitButton)) !== null;
+
+        if (hasUpload) {
+          await onProgress("step1: clicking 'Upload Submission' (fresh slot)");
+          await tryClickInAnyFrame(page, SEL.uploadSubmissionButton, 10_000);
+          step1Done = true;
+        } else if (hasResubmit) {
+          await onProgress("step1: existing paper detected — clicking resubmit icon");
+          await tryClickInAnyFrame(page, SEL.resubmitButton, 10_000);
+          await onProgress("step1b: confirming resubmission dialog");
+          await tryClickInAnyFrame(page, SEL.confirmResubmission, 15_000);
+          step1Done = true;
+        } else {
+          await page.waitForTimeout(500);
+        }
+      }
+      if (!step1Done) {
+        await dumpPageControls(page, onProgress);
+        throw new Error(
+          "Could not find 'Upload Submission' button or resubmit icon on the dashboard. " +
+          "Check that the slot's submit_url is the assignment dashboard URL " +
+          "(turnitin.com/assignment/type/paper/dashboard/<id>). See [diag] lines.",
+        );
+      }
     }
 
     // ── Step 2: attach the file (hidden file input — no OS dialog) ──────────────
