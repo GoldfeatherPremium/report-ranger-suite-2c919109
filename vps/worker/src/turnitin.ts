@@ -465,25 +465,9 @@ async function downloadSimilarityPdf(
 ): Promise<Buffer> {
   const ctx = page.context();
 
-  // Broad selector for any download-menu option across Turnitin viewer versions.
-  // Covers: "Current View", "Current Page", role="menuitem" variants, data attrs.
-  const SEL_DL_OPTION = [
-    '[role="menuitem"]:has-text("Current")',
-    '[role="option"]:has-text("Current")',
-    'li:has-text("Current View")',
-    'li:has-text("Current Page")',
-    'button:has-text("Current View")',
-    'button:has-text("Current Page")',
-    'a:has-text("Current View")',
-    'a:has-text("Current Page")',
-    'span:has-text("Current View")',
-    'span:has-text("Current Page")',
-    '[role="menuitem"]:has-text("PDF")',
-    '[role="menuitem"]:has-text("Similarity")',
-    '[data-testid*="current-view" i]',
-    '[data-testid*="current-page" i]',
-    '[class*="download-option" i]',
-  ].join(", ");
+  // Text pattern for the "Current View" download dialog option.
+  // Regex so we match regardless of element type (<div>, <a>, <button>, etc.).
+  const DL_OPTION_TEXT = /current\s*view/i;
 
   // ── Step 1: open the similarity viewer ──────────────────────────────────────
   await onProgress("dl-step1: clicking similarity score link to open viewer");
@@ -519,6 +503,42 @@ async function downloadSimilarityPdf(
   const downloadPromise = viewer.waitForEvent("download", { timeout: 120_000 });
   downloadPromise.catch(() => {});  // suppress unhandled-rejection crash
 
+  // viewer is now definitely non-null — safe to close over it in helpers.
+  const v = viewer;
+
+  // Returns true when the download dialog is open (found "Current View" text in any frame).
+  async function dlDialogOpen(): Promise<boolean> {
+    for (const fr of v.frames()) {
+      if ((await fr.getByText(DL_OPTION_TEXT).count().catch(() => 0)) > 0) return true;
+    }
+    return false;
+  }
+
+  // Clicks "Current View" in the open dialog using real mouse coordinates.
+  async function clickCurrentView(timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      for (const fr of v.frames()) {
+        const loc = fr.getByText(DL_OPTION_TEXT).first();
+        if ((await loc.count().catch(() => 0)) > 0) {
+          const box = await loc.boundingBox().catch(() => null);
+          if (box) {
+            const cx = Math.round(box.x + box.width / 2);
+            const cy = Math.round(box.y + box.height / 2);
+            await v.mouse.move(cx, cy);
+            await v.waitForTimeout(200);
+            await v.mouse.click(cx, cy);
+          } else {
+            await loc.click({ timeout: 3_000 }).catch(() => {});
+          }
+          return true;
+        }
+      }
+      await v.waitForTimeout(400);
+    }
+    return false;
+  }
+
   await onProgress("dl-step2: looking for download button");
 
   // The confirmed download button HTML:
@@ -552,16 +572,12 @@ async function downloadSimilarityPdf(
         await viewer.waitForTimeout(400);
         await viewer.mouse.click(cx, cy);
         await viewer.waitForTimeout(3_000); // allow dialog animation to complete
-        // Check all frames for the "Current View" dialog option
-        for (const fr of viewer.frames()) {
-          const cnt = await fr.locator(SEL_DL_OPTION).count().catch(() => 0);
-          if (cnt > 0) {
-            await onProgress(`dl-step2: dialog found (${cnt} options)`);
-            menuOpened = true;
-            break;
-          }
+        if (await dlDialogOpen()) {
+          await onProgress("dl-step2: dialog found — 'Current View' visible");
+          menuOpened = true;
+        } else {
+          await onProgress("dl-step2: dialog not visible yet, retrying");
         }
-        if (!menuOpened) await onProgress("dl-step2: dialog not visible yet, retrying");
       }
     }
     if (!menuOpened) await viewer.waitForTimeout(1_000);
@@ -590,12 +606,7 @@ async function downloadSimilarityPdf(
           await viewer.goBack({ timeout: 10_000 }).catch(() => {});
           continue;
         }
-        for (const fr of viewer.frames()) {
-          if ((await fr.locator(SEL_DL_OPTION).count().catch(() => 0)) > 0) {
-            menuOpened = true;
-            break;
-          }
-        }
+        if (await dlDialogOpen()) { menuOpened = true; }
         if (menuOpened) break;
       } catch {
         if (viewer.isClosed()) break;
@@ -612,13 +623,11 @@ async function downloadSimilarityPdf(
 
   await viewer.waitForTimeout(500);
 
-  // ── Step 3: click the download option inside the menu ───────────────────────
-  await onProgress("dl-step3: clicking 'Current View' download option");
-  if (!(await tryClickInAnyFrame(viewer, SEL_DL_OPTION, 15_000))) {
+  // ── Step 3: click "Current View" in the open dialog ────────────────────────
+  await onProgress("dl-step3: clicking 'Current View'");
+  if (!(await clickCurrentView(15_000))) {
     if (!viewer.isClosed()) await dumpPageControls(viewer, onProgress);
-    throw new Error(
-      "Download menu opened but 'Current View' option not found — see [diag] lines above.",
-    );
+    throw new Error("Download dialog open but could not click 'Current View' — see [diag] lines above.");
   }
 
   const download = await downloadPromise;
