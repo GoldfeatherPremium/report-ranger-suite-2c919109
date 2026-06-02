@@ -235,31 +235,48 @@ export async function submitToTurnitin(opts: {
       return { pdf, submissionId: submissionId ?? existingSubmissionId };
     }
 
-    // ── Step 1: open the Submit File modal ─────────────────────────────────────
-    // Two paths:
-    //   Fresh slot  → "Upload Submission" button is visible
-    //   Used slot   → existing paper row shows a resubmit icon; clicking it
-    //                 opens a "Confirm Resubmission" dialog before the same
-    //                 "Submit File" modal appears.
-    await onProgress("step1: looking for resubmit button or 'Upload Submission'");
-    await dumpPageControls(page, onProgress);
+    // ── Step 1: decide path based on what is on the page ──────────────────────
+    //   Document present in slot → resubmit flow  (Turnitin 24 h cooldown enforced
+    //                               at DB level by claim_next_job; also checked here)
+    //   No document in slot      → fresh upload flow
+    await onProgress("step1: checking page — looking for existing document or upload button");
     {
       const step1Deadline = Date.now() + 60_000;
       let step1Done = false;
       while (Date.now() < step1Deadline && !step1Done) {
-        // Check resubmit FIRST — it is the more specific case and its selector
-        // must not be shadowed by the broad uploadSubmissionButton selector.
+        // Resubmit checked first: when a document is already there the upload
+        // button may also be visible on some UI variants, so we must not
+        // accidentally enter the fresh-upload path for a used slot.
         const hasResubmit = (await locateInAnyFrame(page, SEL.resubmitButton)) !== null;
         const hasUpload   = (await locateInAnyFrame(page, SEL.uploadSubmissionButton)) !== null;
 
         if (hasResubmit) {
-          await onProgress("step1: existing paper detected — clicking resubmit button");
+          // ── Cooldown gate ──────────────────────────────────────────────────
+          // DB claim_next_job already enforces this, but double-check here so
+          // a misconfigured slot gets a clear error instead of a Turnitin error.
+          if (slot.last_submitted_at) {
+            const hoursSince = (Date.now() - new Date(slot.last_submitted_at).getTime()) / 3_600_000;
+            if (hoursSince < slot.cooldown_hours) {
+              const waitH = Math.ceil(slot.cooldown_hours - hoursSince);
+              throw new Error(
+                `Slot "${slot.slot_label}" has an existing document but the ${slot.cooldown_hours}h ` +
+                `cooldown has not elapsed (last submitted ${hoursSince.toFixed(1)}h ago). ` +
+                `Try again in ~${waitH}h.`,
+              );
+            }
+            await onProgress(
+              `step1: document detected — slot last submitted ${hoursSince.toFixed(1)}h ago` +
+              ` (cooldown ${slot.cooldown_hours}h ✓) — resubmit flow`,
+            );
+          } else {
+            await onProgress("step1: document detected (no prior usage record in system) — resubmit flow");
+          }
           await tryClickInAnyFrame(page, SEL.resubmitButton, 10_000);
           await onProgress("step1b: confirming resubmission dialog");
           await tryClickInAnyFrame(page, SEL.confirmResubmission, 15_000);
           step1Done = true;
         } else if (hasUpload) {
-          await onProgress("step1: clicking 'Upload Submission' (fresh slot)");
+          await onProgress("step1: no existing document — fresh upload flow");
           await tryClickInAnyFrame(page, SEL.uploadSubmissionButton, 10_000);
           step1Done = true;
         } else {
