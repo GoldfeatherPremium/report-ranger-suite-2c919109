@@ -85,23 +85,25 @@ export async function downloadReport(jobId: string): Promise<string | null> {
 }
 
 export async function retryJob(id: string) {
-  return supabase.from("jobs").update({
-    status: "queued",
-    error: null,
-    attempts: 0,
-    worker_id: null,
-    queued_at: new Date().toISOString(),
-  }).eq("id", id);
+  // RPC (security definer): requeues as a fresh upload, clears the stale
+  // slot/submission so the worker doesn't mistake it for a resume, and frees
+  // the prior slot-usage row (the client cannot touch that table under RLS).
+  return supabase.rpc("retry_job", { p_job_id: id });
 }
 
 export async function cancelJob(id: string) {
-  return supabase.from("jobs").update({
-    status: "cancelled",
-    finished_at: new Date().toISOString(),
-  }).eq("id", id);
+  // RPC (security definer): marks cancelled and frees the slot when no document
+  // was submitted, so a cancelled job doesn't leak a Turnitin slot for 24h.
+  return supabase.rpc("cancel_job", { p_job_id: id });
 }
 
 export async function deleteJob(id: string, sourcePath: string) {
+  // Remove the generated report object(s) too — deleting the job row cascades
+  // the reports rows, but the PDF in the 'reports' bucket would otherwise orphan.
+  const { data: reps } = await supabase.from("reports").select("storage_path").eq("job_id", id);
+  if (reps && reps.length) {
+    await supabase.storage.from("reports").remove(reps.map((r) => r.storage_path));
+  }
   await supabase.storage.from("documents").remove([sourcePath]);
   return supabase.from("jobs").delete().eq("id", id);
 }
