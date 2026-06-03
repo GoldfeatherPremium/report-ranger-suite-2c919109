@@ -94,7 +94,7 @@ export async function retryJob(id: string) {
 export async function cancelJob(id: string) {
   // RPC (security definer): marks cancelled and frees the slot when no document
   // was submitted, so a cancelled job doesn't leak a Turnitin slot for 24h.
-  return supabase.rpc("cancel_job", { p_job_id: id });
+  return supabase.rpc("cancel_job" as never, { p_job_id: id } as never);
 }
 
 export async function deleteJob(id: string, sourcePath: string) {
