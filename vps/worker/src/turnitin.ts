@@ -529,18 +529,39 @@ export async function submitToTurnitin(opts: {
             "the final Submit to Turnitin button to confirm the submission", onProgress, 10_000);
           step5Done = true;
         } else if (hasSlowPreview) {
-          await onProgress("step5: slow-preview screen — clicking 'Confirm'");
-          await smartClick(page, SEL.confirmSlowPreview,
-            "the Confirm button after the slow-preview hourglass screen", onProgress, 10_000);
-          // Verify the click actually registered: slow-preview text should disappear
-          // within a few seconds, or "Submission Complete!" should already appear.
+          await onProgress("step5: slow-preview screen — clicking 'Confirm' (trusted mouse event)");
+          // Turnitin's Angular handler checks event.isTrusted — force:true and
+          // dispatchEvent both fail.  Use mouse.move + mouse.click at real coordinates.
+          let confirmClicked = false;
+          for (const frame of page.frames()) {
+            const loc = frame.locator(SEL.confirmSlowPreview).first();
+            if ((await loc.count().catch(() => 0)) === 0) continue;
+            const box = await loc.boundingBox().catch(() => null);
+            if (box) {
+              const cx = Math.round(box.x + box.width / 2);
+              const cy = Math.round(box.y + box.height / 2);
+              await onProgress(`step5: Confirm at (${cx},${cy}) — mouse click`);
+              await page.mouse.move(cx, cy);
+              await page.waitForTimeout(200);
+              await page.mouse.click(cx, cy);
+              confirmClicked = true;
+              break;
+            }
+            // No bounding box (e.g. inside hidden iframe) — fall back to AI smartClick
+            if (!confirmClicked) {
+              await smartClick(page, SEL.confirmSlowPreview,
+                "the Confirm button after the slow-preview hourglass screen", onProgress, 5_000);
+              confirmClicked = true;
+            }
+          }
+          // Verify the click registered: slow-preview text should disappear, or
+          // "Submission Complete!" should appear.
           await page.waitForTimeout(2_000);
           const slowPreviewStillHere = (await locateInAnyFrame(page, SEL.slowPreviewText)) !== null;
           const alreadyDone = await waitForTextInAnyFrame(page, "Submission Complete", 3_000);
           if (!slowPreviewStillHere || alreadyDone) {
             step5Done = true;
           } else {
-            // Click didn't register — loop will retry on the next iteration
             await onProgress("step5: Confirm click did not register — retrying");
           }
         } else {
