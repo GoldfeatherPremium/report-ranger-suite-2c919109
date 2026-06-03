@@ -127,3 +127,42 @@ function AddAccountDialog({ onDone }: { onDone: () => void }) {
     </DialogContent>
   );
 }
+
+function DeleteAccountButton({ account, onDeleted }: { account: Account; onDeleted: () => void }) {
+  const [deleting, setDeleting] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  async function handleDelete() {
+    setDeleting(true);
+    const { error } = await supabase.from("turnitin_accounts" as never).delete().eq("id", account.id);
+    setDeleting(false);
+    if (error) { toast.error(error.message); return; }
+    toast.success("Account deleted");
+    setOpen(false);
+    onDeleted();
+  }
+
+  return (
+    <AlertDialog open={open} onOpenChange={setOpen}>
+      <AlertDialogTrigger asChild>
+        <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive">
+          <Trash2 className="h-4 w-4" />
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete “{account.label}”?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This permanently removes the account ({account.email}) and all of its slots. Jobs that already submitted to Turnitin under this account will lose their slot reference. This cannot be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+          <AlertDialogAction onClick={(e) => { e.preventDefault(); handleDelete(); }} disabled={deleting} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+            {deleting ? "Deleting…" : "Delete"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
