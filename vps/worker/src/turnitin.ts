@@ -107,9 +107,18 @@ const SEL = {
   ].join(", "),
 
   // ── Resubmit-denied indicators ───────────────────────────────────────────────
-  // TODO: add CSS selectors from Turnitin's "cannot resubmit" screenshots here.
-  // The AI text-heuristic in isResubmitDenied() runs as fallback even with this empty.
-  resubmitDenied: [] as string[],
+  // Turnitin disables the resubmit button (disabled / aria-disabled) and shows
+  // a timestamp message when resubmissions are not allowed.  These selectors
+  // catch the disabled-button state before we even try to click.
+  // Add more selectors here after inspecting the live page with DevTools.
+  resubmitDenied: [
+    '[class*="resubmit"][disabled]',
+    '[class*="resubmit"][aria-disabled="true"]',
+    'button[disabled][class*="resubmit"]',
+    'input[disabled][value*="Resubmit" i]',
+    'a[class*="resubmit"][aria-disabled="true"]',
+    '[class*="resubmit"].disabled',
+  ].join(", "),
 
   // ── Assignment dashboard — the clickable similarity-score link (e.g. "20%") ──
   // Clicking it opens the viewer in a new tab (ev.turnitin.com/app/carta/e).
@@ -148,14 +157,24 @@ const SEL = {
   ].join(", "),
 };
 
+// Turnitin message patterns when resubmission is refused.
+// Sources: Turnitin help centre + observed student-facing messages.
 const RESUBMIT_DENIED_TEXTS: RegExp[] = [
+  // Turnitin's own help-centre wording
   /cannot resubmit/i,
   /resubmission is not allowed/i,
+  /resubmissions.*not.*enabled/i,
+  /not allowed to resubmit/i,
+  /resubmit.*not.*available/i,
+  // "You have N resubmission(s) left" warning modal (last attempt)
+  /you have \d+ resubmission.* left/i,
+  // "when you can submit next" timestamp message shown on disabled button
+  /when you can submit next/i,
+  /submission becomes available/i,
+  // Generic fallbacks
   /you have already submitted/i,
   /submission limit/i,
-  /not allowed to resubmit/i,
   /paper already exists/i,
-  /resubmit.*not.*available/i,
 ];
 
 // ── Smart helpers: try hardcoded selector first, fall back to AI on timeout ────
@@ -210,8 +229,9 @@ async function smartFill(
 // Checks: hardcoded deny selectors (stub) → page text heuristics → AI fallback.
 // Returns true only on a clear denial signal; false on ambiguity (worker retries).
 async function isResubmitDenied(page: Page, onProgress: Logger): Promise<boolean> {
-  for (const sel of SEL.resubmitDenied) {
-    if (await locateInAnyFrame(page, sel)) return true;
+  if (SEL.resubmitDenied && (await locateInAnyFrame(page, SEL.resubmitDenied))) {
+    await onProgress("[warn] resubmit denied detected (disabled button selector matched)");
+    return true;
   }
   const body = await page.evaluate(() => document.body.innerText).catch(() => "");
   for (const pat of RESUBMIT_DENIED_TEXTS) {
@@ -357,7 +377,12 @@ export async function submitToTurnitin(opts: {
         const hasUpload   = (await locateInAnyFrame(page, SEL.uploadSubmissionButton)) !== null;
 
         if (hasResubmit) {
-          await onProgress("step1: existing document detected — resubmit flow");
+          await onProgress("step1: existing document detected — checking if resubmit is allowed");
+          // Pre-click: if the button is already disabled, Turnitin won't allow it.
+          if (await isResubmitDenied(page, onProgress)) {
+            throw new ResubmitDeniedError(slot.slot_label);
+          }
+          await onProgress("step1: resubmit allowed — proceeding");
           await smartClick(page, SEL.resubmitButton,
             "the resubmit or re-upload icon button for the existing paper submission", onProgress, 10_000);
           await onProgress("step1b: confirming resubmission dialog");
