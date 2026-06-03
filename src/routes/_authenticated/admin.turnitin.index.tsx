@@ -70,11 +70,14 @@ function Page() {
                   </span>
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <Button asChild variant="ghost" size="sm">
-                    <Link to="/admin/turnitin/$accountId" params={{ accountId: a.id }}>
-                      Slots <ChevronRight className="ml-1 h-4 w-4" />
-                    </Link>
-                  </Button>
+                  <div className="flex items-center justify-end gap-1">
+                    <Button asChild variant="ghost" size="sm">
+                      <Link to="/admin/turnitin/$accountId" params={{ accountId: a.id }}>
+                        Slots <ChevronRight className="ml-1 h-4 w-4" />
+                      </Link>
+                    </Button>
+                    <DeleteAccountButton account={a} onDeleted={() => refetch()} />
+                  </div>
                 </td>
               </tr>
             ))}
