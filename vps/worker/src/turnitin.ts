@@ -249,6 +249,57 @@ async function isResubmitDenied(page: Page, onProgress: Logger): Promise<boolean
   return false;
 }
 
+// AI intent map used by runStepRecovery — one entry per upload step.
+const STEP_INTENTS: Record<number, { intent?: string; textWait?: string }> = {
+  4: { intent: "the Upload and Review button to proceed to the submission review screen" },
+  5: { intent: "the Submit to Turnitin button or Confirm button to complete the upload and submit it" },
+  6: { textWait: "Submission Complete" },
+  7: { textWait: "%" },  // similarity score visible on dashboard
+};
+
+// When step N fails, run AI-assisted recovery on steps N-1, N, and N+1.
+// For click steps: dump the page, ask AI to find the element, click it, then
+// wait for "Submission Complete" to confirm the submission path was reached.
+// For text-wait steps: just poll for the text for up to 30s.
+// Returns true if any of the three steps produced a "Submission Complete" signal.
+async function runStepRecovery(
+  page: Page,
+  failedStep: number,
+  onProgress: Logger,
+): Promise<boolean> {
+  await onProgress(
+    `[recovery] step${failedStep} failed — AI recovery on steps ${failedStep - 1}–${failedStep + 1}`,
+  );
+  for (const s of [failedStep - 1, failedStep, failedStep + 1]) {
+    const info = STEP_INTENTS[s];
+    if (!info) continue;
+    if (info.textWait) {
+      const found = await waitForTextInAnyFrame(page, info.textWait, 30_000);
+      if (found) {
+        await onProgress(`[recovery] step${s}: "${info.textWait}" found — recovered`);
+        return true;
+      }
+    } else if (info.intent) {
+      await dumpPageControls(page, onProgress);
+      const ai = await findElementWithAI(page, info.intent);
+      if (ai) {
+        const clicked = await tryClickInAnyFrame(page, ai.selector, 5_000);
+        await onProgress(
+          `[recovery] step${s}: AI click "${ai.selector}" — ${clicked ? "ok" : "miss"}`,
+        );
+        if (clicked && s >= failedStep) {
+          const complete = await waitForTextInAnyFrame(page, "Submission Complete", 90_000);
+          if (complete) {
+            await onProgress("[recovery] Submission Complete detected after AI click — recovered");
+            return true;
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
 export type SubmissionResult = {
   pdf: Buffer;
   submissionId: string | null;
@@ -464,6 +515,7 @@ export async function submitToTurnitin(opts: {
     //                ("You must click confirm to complete your upload.")
     // Both paths converge at Step 6 (wait for "Submission Complete!").
     await onProgress(`step5: waiting for 'Submit to Turnitin' or 'Confirm' (slow preview) — up to ${Math.round(uploadTimeoutMs / 1000)}s`);
+    let submissionConfirmedByRecovery = false;
     {
       const step5Deadline = Date.now() + uploadTimeoutMs;
       let step5Done = false;
@@ -480,31 +532,47 @@ export async function submitToTurnitin(opts: {
           await onProgress("step5: slow-preview screen — clicking 'Confirm'");
           await smartClick(page, SEL.confirmSlowPreview,
             "the Confirm button after the slow-preview hourglass screen", onProgress, 10_000);
-          step5Done = true;
+          // Verify the click actually registered: slow-preview text should disappear
+          // within a few seconds, or "Submission Complete!" should already appear.
+          await page.waitForTimeout(2_000);
+          const slowPreviewStillHere = (await locateInAnyFrame(page, SEL.slowPreviewText)) !== null;
+          const alreadyDone = await waitForTextInAnyFrame(page, "Submission Complete", 3_000);
+          if (!slowPreviewStillHere || alreadyDone) {
+            step5Done = true;
+          } else {
+            // Click didn't register — loop will retry on the next iteration
+            await onProgress("step5: Confirm click did not register — retrying");
+          }
         } else {
           await page.waitForTimeout(500);
         }
       }
       if (!step5Done) {
-        await dumpPageControls(page, onProgress);
-        const ai = await findElementWithAI(page,
-          "the final Submit to Turnitin confirmation button or Confirm button to complete the upload");
-        if (ai && await tryClickInAnyFrame(page, ai.selector, 5_000)) {
-          await onProgress(`[warn] [ai-fallback] intent="step5 submit" used selector=${ai.selector} — update SEL`);
-          await onProgress("step5: AI-resolved submit button clicked — continuing");
-        } else {
+        // All hardcoded selectors exhausted — try AI recovery on steps 4, 5, 6
+        const recovered = await runStepRecovery(page, 5, onProgress);
+        if (!recovered) {
           throw new Error(
             "Could not find 'Submit to Turnitin' or 'Confirm' button after upload — see [diag] lines.",
           );
         }
+        // runStepRecovery confirmed "Submission Complete" — skip step 6 wait
+        submissionConfirmedByRecovery = true;
       }
     }
 
     // ── Step 6: confirm completion and close the modal ─────────────────────────
-    await onProgress("step6: waiting for 'Submission Complete!'");
-    const completed = await waitForTextInAnyFrame(page, "Submission Complete", 120_000);
-    if (!completed) {
-      await onProgress("did not see 'Submission Complete!' text within 2 min — continuing anyway");
+    if (!submissionConfirmedByRecovery) {
+      await onProgress("step6: waiting for 'Submission Complete!'");
+      const completed = await waitForTextInAnyFrame(page, "Submission Complete", 120_000);
+      if (!completed) {
+        await onProgress("step6: 'Submission Complete!' not seen — attempting AI recovery");
+        const recovered = await runStepRecovery(page, 6, onProgress);
+        if (!recovered) {
+          throw new Error(
+            "Submission Complete! never appeared (120s + AI recovery). Restarting upload flow on same slot.",
+          );
+        }
+      }
     }
     await tryClickInAnyFrame(page, SEL.closeModalButton, 10_000);
     await onProgress("submission complete; dialog closed");
