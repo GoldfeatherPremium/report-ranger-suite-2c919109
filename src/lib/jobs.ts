@@ -88,7 +88,7 @@ export async function retryJob(id: string) {
   // RPC (security definer): requeues as a fresh upload, clears the stale
   // slot/submission so the worker doesn't mistake it for a resume, and frees
   // the prior slot-usage row (the client cannot touch that table under RLS).
-  return supabase.rpc("retry_job", { p_job_id: id });
+  return supabase.rpc("retry_job" as never, { p_job_id: id } as never);
 }
 
 export async function cancelJob(id: string) {
