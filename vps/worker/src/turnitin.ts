@@ -3,6 +3,7 @@ import { writeFile, mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SlotInfo } from "./supabase.js";
+import { aiResolveSelector, aiDetectPageState } from "./ai-resolver.js";
 
 // === Selectors — adjust here if Turnitin UI shifts ===
 // The flow below matches the real Turnitin "classic" student experience:
@@ -206,10 +207,16 @@ export async function submitToTurnitin(opts: {
     ]);
     await onProgress(`after login submit: url=${page.url()} title=${await page.title().catch(() => "?")}`);
 
-    // If the email field is still present, the login almost certainly failed
-    // (wrong credentials, captcha, or an unexpected page) — surface it clearly.
+    // If the email field is still present, the login almost certainly failed.
+    // Also check for CAPTCHAs or unexpected pages via AI.
     if (await locateInAnyFrame(page, SEL.emailInput)) {
-      await dumpPageControls(page, onProgress);
+      const diagLines = await dumpPageControls(page, onProgress);
+      const pageState = await aiDetectPageState(
+        diagLines, page.url(), await page.title().catch(() => ""), onProgress,
+      );
+      if (pageState === "captcha") {
+        throw new Error("Login blocked by CAPTCHA — manual intervention required (see [diag] lines).");
+      }
       throw new Error("Still on a login form after submitting — login likely failed (check credentials/captcha; see [diag] lines).");
     }
     await onProgress("logged in");
@@ -284,12 +291,33 @@ export async function submitToTurnitin(opts: {
         }
       }
       if (!step1Done) {
-        await dumpPageControls(page, onProgress);
-        throw new Error(
-          "Could not find resubmit button or 'Upload Submission' button on the dashboard. " +
-          "Check that the slot's submit_url is the assignment dashboard URL " +
-          "(turnitin.com/assignment/type/paper/dashboard/<id>). See [diag] lines.",
+        // Normal selectors exhausted — ask AI to identify the button from the page dump.
+        const diagLines = await dumpPageControls(page, onProgress);
+        const pageState = await aiDetectPageState(
+          diagLines, page.url(), await page.title().catch(() => ""), onProgress,
         );
+        if (pageState === "captcha") {
+          throw new Error("CAPTCHA detected on dashboard — manual intervention required.");
+        }
+        if (pageState === "login") {
+          throw new Error("Ended up back on the login page — session may have expired.");
+        }
+        // Try AI-guided click for resubmit first, then upload.
+        const aiHit =
+          await aiClickFallback(page, diagLines,
+            "click the resubmit or re-upload icon button for an existing paper submission",
+            onProgress) ||
+          await aiClickFallback(page, diagLines,
+            "click the 'Upload Submission' or 'Submit Paper' button to open the file upload dialog",
+            onProgress);
+        if (!aiHit) {
+          throw new Error(
+            "Could not find resubmit button or 'Upload Submission' button on the dashboard. " +
+            "Check that the slot's submit_url is the assignment dashboard URL " +
+            "(turnitin.com/assignment/type/paper/dashboard/<id>). See [diag] lines.",
+          );
+        }
+        await onProgress("step1: AI-resolved button clicked — continuing");
       }
     }
 
@@ -337,10 +365,16 @@ export async function submitToTurnitin(opts: {
         }
       }
       if (!step5Done) {
-        await dumpPageControls(page, onProgress);
-        throw new Error(
-          "Could not find 'Submit to Turnitin' or 'Confirm' button after upload — see [diag] lines.",
-        );
+        const diagLines = await dumpPageControls(page, onProgress);
+        const aiHit = await aiClickFallback(page, diagLines,
+          "click the final 'Submit to Turnitin' confirmation button or 'Confirm' button to complete the upload",
+          onProgress);
+        if (!aiHit) {
+          throw new Error(
+            "Could not find 'Submit to Turnitin' or 'Confirm' button after upload — see [diag] lines.",
+          );
+        }
+        await onProgress("step5: AI-resolved submit button clicked — continuing");
       }
     }
 
@@ -474,11 +508,14 @@ async function waitForTextInAnyFrame(page: Page, text: string, timeoutMs: number
   return false;
 }
 
-// Log every input/button/link on the page (and in each iframe) so we can see
-// the real DOM and pick correct selectors without a browser on the VPS.
-async function dumpPageControls(page: Page, onProgress: (m: string) => Promise<void>) {
+// Collect every input/button/link on the page (all frames) into an array of
+// diagnostic strings, log them, and return them so the AI resolver can read them.
+async function dumpPageControls(page: Page, onProgress: (m: string) => Promise<void>): Promise<string[]> {
+  const lines: string[] = [];
   try {
-    await onProgress(`[diag] url=${page.url()} title=${await page.title().catch(() => "?")} frames=${page.frames().length}`);
+    const header = `[diag] url=${page.url()} title=${await page.title().catch(() => "?")} frames=${page.frames().length}`;
+    await onProgress(header);
+    lines.push(header);
     for (const f of page.frames()) {
       const controls = await f
         .$$eval("input, button, a[href], select, textarea, [role=button]", (els) =>
@@ -500,13 +537,33 @@ async function dumpPageControls(page: Page, onProgress: (m: string) => Promise<v
         )
         .catch(() => [] as string[]);
       if (controls.length) {
-        await onProgress(`[diag] frame(${f.url().slice(0, 70)}):`);
-        for (const c of controls) await onProgress(`[diag]   <${c}>`);
+        const frameHeader = `[diag] frame(${f.url().slice(0, 70)}):`;
+        await onProgress(frameHeader);
+        lines.push(frameHeader);
+        for (const c of controls) {
+          const line = `[diag]   <${c}>`;
+          await onProgress(line);
+          lines.push(line);
+        }
       }
     }
   } catch (e) {
     await onProgress(`[diag] dump failed: ${e instanceof Error ? e.message : String(e)}`);
   }
+  return lines;
+}
+
+// After normal selectors fail, ask Gemini for a selector and try it once.
+// Returns true if it found and clicked the element, false otherwise.
+async function aiClickFallback(
+  page: Page,
+  diagLines: string[],
+  task: string,
+  onProgress: (m: string) => Promise<void>,
+): Promise<boolean> {
+  const sel = await aiResolveSelector(diagLines, task, onProgress);
+  if (!sel) return false;
+  return tryClickInAnyFrame(page, sel, 8_000);
 }
 
 // Try to extract a Turnitin submission/paper oid from the current page.
