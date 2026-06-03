@@ -3,6 +3,8 @@ import { writeFile, mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SlotInfo } from "./supabase.js";
+import { aiDetectPageState } from "./ai-resolver.js";
+import { findElementWithAI } from "./ai-helper.js";
 
 // === Selectors — adjust here if Turnitin UI shifts ===
 // The flow below matches the real Turnitin "classic" student experience:
@@ -25,7 +27,6 @@ const SEL = {
     'button:has-text("Upload Submission")',
     'a:has-text("Upload Submission")',
     'input[value="Upload Submission"]',
-    'button:has-text("Submit")',
   ].join(", "),
 
   // ── "Submit File" modal ─────────────────────────────────────────────────────
@@ -52,6 +53,16 @@ const SEL = {
     'a:has-text("Submit to Turnitin")',
   ].join(", "),
 
+  // ── Slow-preview confirmation screen ─────────────────────────────────────────
+  // Turnitin sometimes skips the preview and shows an hourglass with:
+  // "You must click confirm to complete your upload."
+  // Detect by the SPECIFIC MESSAGE TEXT so we don't fire on any other Confirm button.
+  slowPreviewText: 'text=click confirm to complete your upload',
+  confirmSlowPreview: [
+    'button:has-text("Confirm")',
+    'input[value="Confirm"]',
+  ].join(", "),
+
   // ── Submission Complete modal — close it ─────────────────────────────────────
   closeModalButton: [
     'button[aria-label="Close" i]',
@@ -59,6 +70,31 @@ const SEL = {
     '[data-dismiss="modal"]',
     '.modal button.close',
     'button:has-text("×")',
+  ].join(", "),
+
+  // ── Resubmit button (used slots — dashboard already has a previous paper) ───
+  // Turnitin's classic UI renders this as an icon whose text content is an
+  // Angular i18n key (e.g. "ts-turnitin.lang.EntResubmit"), so text-based
+  // selectors never fire.  The class attribute is the reliable signal.
+  resubmitButton: [
+    'input[value="Resubmit"]',
+    'input[value*="resubmit" i]',
+    'input[name*="resubmit" i]',
+    'input[title*="resubmit" i]',
+    'input[alt*="resubmit" i]',
+    'a[href*="resubmit"]',
+    'a[title*="resubmit" i]',
+    'a:has(img[alt*="resubmit" i])',
+    'a:has(img[title*="resubmit" i])',
+    'button:has-text("Resubmit")',
+    '[class*="resubmit"]',
+  ].join(", "),
+
+  // ── "Confirm Resubmission" dialog ───────────────────────────────────────────
+  confirmResubmission: [
+    'button:has-text("Confirm")',
+    'input[value="Confirm"]',
+    'a:has-text("Confirm")',
   ].join(", "),
 
   // ── Assignment dashboard — the clickable similarity-score link (e.g. "20%") ──
@@ -97,6 +133,54 @@ const SEL = {
     '[data-testid*="current-view" i]',
   ].join(", "),
 };
+
+// ── Smart helpers: try hardcoded selector first, fall back to AI on timeout ────
+//
+// On TimeoutError / not-found, calls findElementWithAI to identify the element
+// from the live DOM, then retries with the AI-derived selector.  On success,
+// emits a [warn] [ai-fallback] log line so the operator knows which SEL entry
+// needs updating.  If AI also fails, the function returns false / re-throws so
+// existing error handling (slot freeing, retries) is unchanged.
+//
+// `smartFill` / `smartClick` are intentionally NOT async-retrying on their own —
+// they are called from loops that already handle retries at the step level.
+
+type Logger = (msg: string) => Promise<void>;
+
+async function smartClick(
+  page: Page,
+  selector: string,
+  intent: string,
+  log: Logger,
+  timeoutMs = 8_000,
+): Promise<boolean> {
+  const ok = await tryClickInAnyFrame(page, selector, timeoutMs);
+  if (ok) return true;
+
+  const ai = await findElementWithAI(page, intent);
+  if (!ai) return false;
+
+  await log(`[warn] [ai-fallback] intent="${intent}" used selector=${ai.selector} — update SEL`);
+  return tryClickInAnyFrame(page, ai.selector, 5_000);
+}
+
+async function smartFill(
+  page: Page,
+  selector: string,
+  value: string,
+  intent: string,
+  log: Logger,
+  timeoutMs = 5_000,
+): Promise<boolean> {
+  const ok = await fillInAnyFrame(page, selector, value, timeoutMs);
+  if (ok) return true;
+
+  const ai = await findElementWithAI(page, intent);
+  if (!ai) return false;
+
+  await log(`[warn] [ai-fallback] intent="${intent}" used selector=${ai.selector} — update SEL`);
+  return fillInAnyFrame(page, ai.selector, value, 5_000);
+}
 
 export type SubmissionResult = {
   pdf: Buffer;
@@ -153,14 +237,16 @@ export async function submitToTurnitin(opts: {
     await onProgress(`login page loaded: url=${page.url()} title=${await page.title().catch(() => "?")}`);
 
     // Find and fill the email field anywhere on the page (including iframes).
-    const emailOk = await fillInAnyFrame(page, SEL.emailInput, slot.email, 30_000);
+    const emailOk = await smartFill(page, SEL.emailInput, slot.email,
+      "the email or username input field on the Turnitin login page", onProgress, 30_000);
     if (!emailOk) {
       await dumpPageControls(page, onProgress);
       throw new Error(
         "Could not find the Turnitin email field. The [diag] lines above list every input/button on the page — share them and I'll set the exact selectors. (The login URL may also be wrong for these accounts.)",
       );
     }
-    const passwordOk = await fillInAnyFrame(page, SEL.passwordInput, slot.password, 15_000);
+    const passwordOk = await smartFill(page, SEL.passwordInput, slot.password,
+      "the password input field on the Turnitin login page", onProgress, 15_000);
     if (!passwordOk) {
       await dumpPageControls(page, onProgress);
       throw new Error("Found the email field but not the password field — see the [diag] lines above.");
@@ -168,14 +254,21 @@ export async function submitToTurnitin(opts: {
 
     await Promise.all([
       page.waitForLoadState("networkidle", { timeout: 60_000 }).catch(() => {}),
-      clickInAnyFrame(page, SEL.loginButton, 15_000).catch(() => page.keyboard.press("Enter")),
+      smartClick(page, SEL.loginButton, "the Log in / Sign in submit button on the login page",
+        onProgress, 15_000).catch(() => page.keyboard.press("Enter")),
     ]);
     await onProgress(`after login submit: url=${page.url()} title=${await page.title().catch(() => "?")}`);
 
-    // If the email field is still present, the login almost certainly failed
-    // (wrong credentials, captcha, or an unexpected page) — surface it clearly.
+    // If the email field is still present, the login almost certainly failed.
+    // Also check for CAPTCHAs or unexpected pages via AI.
     if (await locateInAnyFrame(page, SEL.emailInput)) {
-      await dumpPageControls(page, onProgress);
+      const diagLines = await dumpPageControls(page, onProgress);
+      const pageState = await aiDetectPageState(
+        diagLines, page.url(), await page.title().catch(() => ""), onProgress,
+      );
+      if (pageState === "captcha") {
+        throw new Error("Login blocked by CAPTCHA — manual intervention required (see [diag] lines).");
+      }
       throw new Error("Still on a login form after submitting — login likely failed (check credentials/captcha; see [diag] lines).");
     }
     await onProgress("logged in");
@@ -201,15 +294,91 @@ export async function submitToTurnitin(opts: {
       return { pdf, submissionId: submissionId ?? existingSubmissionId };
     }
 
-    // ── Step 1: open the Submit File modal ─────────────────────────────────────
-    await onProgress("step1: clicking 'Upload Submission'");
-    if (!(await tryClickInAnyFrame(page, SEL.uploadSubmissionButton, 30_000))) {
-      await dumpPageControls(page, onProgress);
-      throw new Error(
-        "Could not find the 'Upload Submission' button on the assignment dashboard. " +
-        "Check that the slot's submit_url is the assignment dashboard URL " +
-        "(turnitin.com/assignment/type/paper/dashboard/<id>). See [diag] lines.",
-      );
+    // ── Step 1: decide path based on what is on the page ──────────────────────
+    //   Document present in slot → resubmit flow  (Turnitin 24 h cooldown enforced
+    //                               at DB level by claim_next_job; also checked here)
+    //   No document in slot      → fresh upload flow
+    await onProgress("step1: checking page — looking for existing document or upload button");
+    {
+      const step1Deadline = Date.now() + 60_000;
+      let step1Done = false;
+      while (Date.now() < step1Deadline && !step1Done) {
+        // Resubmit checked first: when a document is already there the upload
+        // button may also be visible on some UI variants, so we must not
+        // accidentally enter the fresh-upload path for a used slot.
+        const hasResubmit = (await locateInAnyFrame(page, SEL.resubmitButton)) !== null;
+        const hasUpload   = (await locateInAnyFrame(page, SEL.uploadSubmissionButton)) !== null;
+
+        if (hasResubmit) {
+          // ── Cooldown gate ──────────────────────────────────────────────────
+          // DB claim_next_job already enforces this, but double-check here so
+          // a misconfigured slot gets a clear error instead of a Turnitin error.
+          if (slot.last_submitted_at) {
+            const hoursSince = (Date.now() - new Date(slot.last_submitted_at).getTime()) / 3_600_000;
+            if (hoursSince < slot.cooldown_hours) {
+              const waitH = Math.ceil(slot.cooldown_hours - hoursSince);
+              throw new Error(
+                `Slot "${slot.slot_label}" has an existing document but the ${slot.cooldown_hours}h ` +
+                `cooldown has not elapsed (last submitted ${hoursSince.toFixed(1)}h ago). ` +
+                `Try again in ~${waitH}h.`,
+              );
+            }
+            await onProgress(
+              `step1: document detected — slot last submitted ${hoursSince.toFixed(1)}h ago` +
+              ` (cooldown ${slot.cooldown_hours}h ✓) — resubmit flow`,
+            );
+          } else {
+            await onProgress("step1: document detected (no prior usage record in system) — resubmit flow");
+          }
+          await smartClick(page, SEL.resubmitButton,
+            "the resubmit or re-upload icon button for the existing paper submission", onProgress, 10_000);
+          await onProgress("step1b: confirming resubmission dialog");
+          await smartClick(page, SEL.confirmResubmission,
+            "the Confirm button in the Confirm Resubmission dialog", onProgress, 15_000);
+          step1Done = true;
+        } else if (hasUpload) {
+          await onProgress("step1: no existing document — fresh upload flow");
+          await smartClick(page, SEL.uploadSubmissionButton,
+            "the blue Upload Submission button to open the file upload modal", onProgress, 10_000);
+          step1Done = true;
+        } else {
+          await page.waitForTimeout(500);
+        }
+      }
+      if (!step1Done) {
+        // Normal selectors exhausted — ask AI to identify the button from the page dump.
+        const diagLines = await dumpPageControls(page, onProgress);
+        const pageState = await aiDetectPageState(
+          diagLines, page.url(), await page.title().catch(() => ""), onProgress,
+        );
+        if (pageState === "captcha") {
+          throw new Error("CAPTCHA detected on dashboard — manual intervention required.");
+        }
+        if (pageState === "login") {
+          throw new Error("Ended up back on the login page — session may have expired.");
+        }
+        // Try AI-guided click: resubmit first, then upload.
+        let aiHit = false;
+        for (const [aiIntent, label] of [
+          ["the resubmit or re-upload icon button for an existing paper submission", "resubmit"],
+          ["the blue Upload Submission button to open the file upload modal", "upload"],
+        ] as const) {
+          const ai = await findElementWithAI(page, aiIntent);
+          if (ai && await tryClickInAnyFrame(page, ai.selector, 5_000)) {
+            await onProgress(`[warn] [ai-fallback] intent="${label} button" used selector=${ai.selector} — update SEL`);
+            aiHit = true;
+            break;
+          }
+        }
+        if (!aiHit) {
+          throw new Error(
+            "Could not find resubmit button or 'Upload Submission' button on the dashboard. " +
+            "Check that the slot's submit_url is the assignment dashboard URL " +
+            "(turnitin.com/assignment/type/paper/dashboard/<id>). See [diag] lines.",
+          );
+        }
+        await onProgress("step1: AI-resolved button clicked — continuing");
+      }
     }
 
     // ── Step 2: attach the file (hidden file input — no OS dialog) ──────────────
@@ -225,18 +394,52 @@ export async function submitToTurnitin(opts: {
 
     // ── Step 4: Upload and Review ──────────────────────────────────────────────
     await onProgress("step4: clicking 'Upload and Review'");
-    if (!(await tryClickInAnyFrame(page, SEL.uploadAndReviewButton, 30_000))) {
+    if (!(await smartClick(page, SEL.uploadAndReviewButton,
+      "the Upload and Review button to proceed after attaching the file", onProgress, 30_000))) {
       await dumpPageControls(page, onProgress);
       throw new Error("Could not find the 'Upload and Review' button — see [diag] lines.");
     }
 
-    // ── Step 5: wait for the review screen, then Submit to Turnitin ─────────────
-    // Uploading can take 15s–5min depending on file size, so wait generously for
-    // the "Submit to Turnitin" button to appear.
-    await onProgress(`step5: waiting for review screen, then 'Submit to Turnitin' (up to ${Math.round(uploadTimeoutMs / 1000)}s)`);
-    if (!(await tryClickInAnyFrame(page, SEL.submitToTurnitinButton, uploadTimeoutMs))) {
-      await dumpPageControls(page, onProgress);
-      throw new Error("Could not find the 'Submit to Turnitin' button on the review screen — see [diag] lines.");
+    // ── Step 5: wait for review screen OR slow-preview confirm screen ────────────
+    // Normal path:   Review screen appears → "Submit to Turnitin" button
+    // Slow preview:  Preview times out → hourglass + "Confirm" button
+    //                ("You must click confirm to complete your upload.")
+    // Both paths converge at Step 6 (wait for "Submission Complete!").
+    await onProgress(`step5: waiting for 'Submit to Turnitin' or 'Confirm' (slow preview) — up to ${Math.round(uploadTimeoutMs / 1000)}s`);
+    {
+      const step5Deadline = Date.now() + uploadTimeoutMs;
+      let step5Done = false;
+      while (Date.now() < step5Deadline && !step5Done) {
+        const hasSubmit      = (await locateInAnyFrame(page, SEL.submitToTurnitinButton)) !== null;
+        const hasSlowPreview = (await locateInAnyFrame(page, SEL.slowPreviewText)) !== null;
+
+        if (hasSubmit) {
+          await onProgress("step5: preview screen — clicking 'Submit to Turnitin'");
+          await smartClick(page, SEL.submitToTurnitinButton,
+            "the final Submit to Turnitin button to confirm the submission", onProgress, 10_000);
+          step5Done = true;
+        } else if (hasSlowPreview) {
+          await onProgress("step5: slow-preview screen — clicking 'Confirm'");
+          await smartClick(page, SEL.confirmSlowPreview,
+            "the Confirm button after the slow-preview hourglass screen", onProgress, 10_000);
+          step5Done = true;
+        } else {
+          await page.waitForTimeout(500);
+        }
+      }
+      if (!step5Done) {
+        await dumpPageControls(page, onProgress);
+        const ai = await findElementWithAI(page,
+          "the final Submit to Turnitin confirmation button or Confirm button to complete the upload");
+        if (ai && await tryClickInAnyFrame(page, ai.selector, 5_000)) {
+          await onProgress(`[warn] [ai-fallback] intent="step5 submit" used selector=${ai.selector} — update SEL`);
+          await onProgress("step5: AI-resolved submit button clicked — continuing");
+        } else {
+          throw new Error(
+            "Could not find 'Submit to Turnitin' or 'Confirm' button after upload — see [diag] lines.",
+          );
+        }
+      }
     }
 
     // ── Step 6: confirm completion and close the modal ─────────────────────────
@@ -341,9 +544,15 @@ async function setFileInAnyFrame(page: Page, selector: string, filePath: string,
 
 // Best-effort: fill the submission title if the field exists and is empty/"Untitled".
 async function setTitleIfEmpty(page: Page, selector: string, value: string, onProgress: (m: string) => Promise<void>): Promise<void> {
+  // Try normal selector first; if missing, ask AI — title field is non-fatal either way.
   const frame = await locateInAnyFrame(page, selector);
   if (!frame) {
-    await onProgress("no submission-title field found (continuing — Turnitin may auto-fill it)");
+    // AI fallback for the title field
+    const filled = await smartFill(page, selector, value,
+      "the submission title text input field in the Submit File modal", onProgress, 5_000);
+    if (!filled) {
+      await onProgress("no submission-title field found (continuing — Turnitin may auto-fill it)");
+    }
     return;
   }
   try {
@@ -369,11 +578,14 @@ async function waitForTextInAnyFrame(page: Page, text: string, timeoutMs: number
   return false;
 }
 
-// Log every input/button/link on the page (and in each iframe) so we can see
-// the real DOM and pick correct selectors without a browser on the VPS.
-async function dumpPageControls(page: Page, onProgress: (m: string) => Promise<void>) {
+// Collect every input/button/link on the page (all frames) into an array of
+// diagnostic strings, log them, and return them so the AI resolver can read them.
+async function dumpPageControls(page: Page, onProgress: (m: string) => Promise<void>): Promise<string[]> {
+  const lines: string[] = [];
   try {
-    await onProgress(`[diag] url=${page.url()} title=${await page.title().catch(() => "?")} frames=${page.frames().length}`);
+    const header = `[diag] url=${page.url()} title=${await page.title().catch(() => "?")} frames=${page.frames().length}`;
+    await onProgress(header);
+    lines.push(header);
     for (const f of page.frames()) {
       const controls = await f
         .$$eval("input, button, a[href], select, textarea, [role=button]", (els) =>
@@ -386,6 +598,7 @@ async function dumpPageControls(page: Page, onProgress: (m: string) => Promise<v
               a.id ? `id=${a.id}` : "",
               a.getAttribute("aria-label") ? `aria=${a.getAttribute("aria-label")}` : "",
               a.placeholder ? `ph=${a.placeholder}` : "",
+              a.className ? `cls=${a.className.toString().slice(0, 60)}` : "",
               (a.textContent || "").trim() ? `txt=${(a.textContent || "").trim().slice(0, 30)}` : "",
             ]
               .filter(Boolean)
@@ -394,13 +607,20 @@ async function dumpPageControls(page: Page, onProgress: (m: string) => Promise<v
         )
         .catch(() => [] as string[]);
       if (controls.length) {
-        await onProgress(`[diag] frame(${f.url().slice(0, 70)}):`);
-        for (const c of controls) await onProgress(`[diag]   <${c}>`);
+        const frameHeader = `[diag] frame(${f.url().slice(0, 70)}):`;
+        await onProgress(frameHeader);
+        lines.push(frameHeader);
+        for (const c of controls) {
+          const line = `[diag]   <${c}>`;
+          await onProgress(line);
+          lines.push(line);
+        }
       }
     }
   } catch (e) {
     await onProgress(`[diag] dump failed: ${e instanceof Error ? e.message : String(e)}`);
   }
+  return lines;
 }
 
 // Try to extract a Turnitin submission/paper oid from the current page.
@@ -465,35 +685,20 @@ async function downloadSimilarityPdf(
 ): Promise<Buffer> {
   const ctx = page.context();
 
-  // Broad selector for any download-menu option across Turnitin viewer versions.
-  // Covers: "Current View", "Current Page", role="menuitem" variants, data attrs.
-  const SEL_DL_OPTION = [
-    '[role="menuitem"]:has-text("Current")',
-    '[role="option"]:has-text("Current")',
-    'li:has-text("Current View")',
-    'li:has-text("Current Page")',
-    'button:has-text("Current View")',
-    'button:has-text("Current Page")',
-    'a:has-text("Current View")',
-    'a:has-text("Current Page")',
-    'span:has-text("Current View")',
-    'span:has-text("Current Page")',
-    '[role="menuitem"]:has-text("PDF")',
-    '[role="menuitem"]:has-text("Similarity")',
-    '[data-testid*="current-view" i]',
-    '[data-testid*="current-page" i]',
-    '[class*="download-option" i]',
-  ].join(", ");
+  // Text pattern for the "Current View" download dialog option.
+  // Regex so we match regardless of element type (<div>, <a>, <button>, etc.).
+  const DL_OPTION_TEXT = /current\s*view/i;
 
   // ── Step 1: open the similarity viewer ──────────────────────────────────────
   await onProgress("dl-step1: clicking similarity score link to open viewer");
   const newPagePromise = ctx.waitForEvent("page", { timeout: 60_000 }).catch(() => null);
 
-  await page.locator(SEL.similarityCell).first().click({ timeout: 15_000 }).catch(async (e: unknown) => {
-    await onProgress(`similarity cell click failed (${e instanceof Error ? e.message : String(e)}), dumping page`);
+  const simClicked = await smartClick(page, SEL.similarityCell,
+    "the similarity percentage link or score cell that opens the Turnitin report viewer", onProgress, 15_000);
+  if (!simClicked) {
     await dumpPageControls(page, onProgress);
     throw new Error("Cannot click similarity cell — check [diag] lines above for correct selector");
-  });
+  }
 
   // Viewer may open in a new tab (most common) or navigate in the same tab.
   let viewer = await newPagePromise;
@@ -514,54 +719,118 @@ async function downloadSimilarityPdf(
   await viewer.mouse.move(1280, 450).catch(() => {});
   await viewer.waitForTimeout(1_000);
 
-  // ── Steps 2+3: find download button → open menu → click download option ─────
+  // ── Steps 2+3: find download button → open dialog → click "Current View" ──────
   // Register the download listener NOW, before any clicking, so we never miss it.
-  // IMPORTANT: attach .catch() immediately so that if the viewer page closes
-  // during the probe, the rejected promise doesn't become an unhandled rejection
-  // and crash the Node process.
   const downloadPromise = viewer.waitForEvent("download", { timeout: 120_000 });
   downloadPromise.catch(() => {});  // suppress unhandled-rejection crash
 
+  // viewer is now definitely non-null — safe to close over it in helpers.
+  const v = viewer;
+
+  // Returns true when the download dialog is open (found "Current View" text in any frame).
+  async function dlDialogOpen(): Promise<boolean> {
+    for (const fr of v.frames()) {
+      if ((await fr.getByText(DL_OPTION_TEXT).count().catch(() => 0)) > 0) return true;
+    }
+    return false;
+  }
+
+  // Clicks "Current View" in the open dialog using real mouse coordinates.
+  async function clickCurrentView(timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      for (const fr of v.frames()) {
+        const loc = fr.getByText(DL_OPTION_TEXT).first();
+        if ((await loc.count().catch(() => 0)) > 0) {
+          const box = await loc.boundingBox().catch(() => null);
+          if (box) {
+            const cx = Math.round(box.x + box.width / 2);
+            const cy = Math.round(box.y + box.height / 2);
+            await v.mouse.move(cx, cy);
+            await v.waitForTimeout(200);
+            await v.mouse.click(cx, cy);
+          } else {
+            await loc.click({ timeout: 3_000 }).catch(() => {});
+          }
+          return true;
+        }
+      }
+      await v.waitForTimeout(400);
+    }
+    return false;
+  }
+
   await onProgress("dl-step2: looking for download button");
 
-  // First try attribute-based selectors (fast path).
-  let menuOpened = await tryClickInAnyFrame(viewer, SEL.downloadButton, 8_000);
+  // The confirmed download button HTML:
+  //   <div role="button" title="Download" class="... tii-icon-download sidebar-download-button ...">
+  // Clicking it opens a CENTER DIALOG with three options: "Current View", "Digital Receipt",
+  // "Originally Submitted File".
+  const DL_BTN_SEL = [
+    '[class*="tii-icon-download"]',
+    '[class*="sidebar-download-button"]',
+    '[title="Download"]',
+  ].join(", ");
 
+  // Only look in the main frame — the toolbar lives there, not in the document sub-iframe.
+  const mainFrame = viewer.mainFrame();
+
+  let menuOpened = false;
+  const dlBtnDeadline = Date.now() + 15_000;
+  while (Date.now() < dlBtnDeadline && !menuOpened) {
+    const n = await mainFrame.locator(DL_BTN_SEL).count().catch(() => 0);
+    if (n > 0) {
+      // Get the element's real screen coordinates and use viewer.mouse.click() —
+      // this dispatches trusted low-level pointer events (isTrusted=true) that
+      // React's event handlers respond to.  force:true / dispatchEvent both fail
+      // on Turnitin because the app checks event.isTrusted.
+      const box = await mainFrame.locator(DL_BTN_SEL).first().boundingBox().catch(() => null);
+      if (box) {
+        const cx = Math.round(box.x + box.width / 2);
+        const cy = Math.round(box.y + box.height / 2);
+        await onProgress(`dl-step2: download button found at (${cx},${cy}), hovering then clicking`);
+        await viewer.mouse.move(cx, cy);
+        await viewer.waitForTimeout(400);
+        await viewer.mouse.click(cx, cy);
+        await viewer.waitForTimeout(3_000); // allow dialog animation to complete
+        if (await dlDialogOpen()) {
+          await onProgress("dl-step2: dialog found — 'Current View' visible");
+          menuOpened = true;
+        } else {
+          await onProgress("dl-step2: dialog not visible yet, retrying");
+        }
+      }
+    }
+    if (!menuOpened) await viewer.waitForTimeout(1_000);
+  }
+
+  // Probe fallback: iterate every [role="button"] in the main frame.
+  // Only reached if the class-based fast path didn't match (future UI change).
   if (!menuOpened) {
-    // Probe fallback: click BOTH <button> and role="button" elements in the
-    // MAIN viewer frame only.  We deliberately skip sub-iframes because the
-    // document content iframe contains hundreds of elements whose clicks can
-    // cause page navigation/close and crash the process.  The download toolbar
-    // is always rendered in the top-level frame.
-    await onProgress("dl-step2: no labelled button found — probing main-frame buttons and [role=button] for download menu");
-    const mainFrame = viewer.mainFrame();
-    const btns = await mainFrame.locator("button, [role='button']").all().catch(() => [] as Locator[]);
-    await onProgress(`dl-step2: found ${btns.length} clickable elements to probe`);
+    await onProgress("dl-step2: fast path missed — probing main-frame [role=button] elements");
+    const btns = await mainFrame.locator("[role='button'], button").all().catch(() => [] as Locator[]);
+    await onProgress(`dl-step2: probing ${btns.length} elements`);
     for (const btn of btns) {
       if (viewer.isClosed()) break;
       const beforeUrl = viewer.url();
       try {
-        // force:true bypasses the "element must be in view / stable" check so
-        // we can click toolbar items that may be partially off-screen.
-        await btn.click({ timeout: 2_000, force: true });
-        await viewer.waitForTimeout(2_000);
+        const box = await btn.boundingBox().catch(() => null);
+        if (!box) continue;
+        const cx = Math.round(box.x + box.width / 2);
+        const cy = Math.round(box.y + box.height / 2);
+        await viewer.mouse.move(cx, cy);
+        await viewer.waitForTimeout(200);
+        await viewer.mouse.click(cx, cy);
+        await viewer.waitForTimeout(2_500);
         if (viewer.isClosed()) break;
-        // If the page navigated away, go back and skip this button.
         if (viewer.url() !== beforeUrl) {
           await viewer.goBack({ timeout: 10_000 }).catch(() => {});
           continue;
         }
-        // Check all frames for a download-menu option.
-        for (const fr of viewer.frames()) {
-          if ((await fr.locator(SEL_DL_OPTION).count().catch(() => 0)) > 0) {
-            menuOpened = true;
-            break;
-          }
-        }
+        if (await dlDialogOpen()) { menuOpened = true; }
         if (menuOpened) break;
       } catch {
         if (viewer.isClosed()) break;
-        /* button not interactable or stale — try next */
       }
     }
   }
@@ -569,21 +838,17 @@ async function downloadSimilarityPdf(
   if (!menuOpened) {
     if (!viewer.isClosed()) await dumpPageControls(viewer, onProgress);
     throw new Error(
-      "Probed all main-frame buttons in the Turnitin viewer but no download menu appeared. " +
-      "See [diag] lines above.",
+      "Could not open the Turnitin download menu — see [diag] lines above.",
     );
   }
 
   await viewer.waitForTimeout(500);
 
-  // ── Step 3: click the download option inside the menu ───────────────────────
-  await onProgress(`dl-step3: clicking download option in menu`);
-  if (!(await tryClickInAnyFrame(viewer, SEL_DL_OPTION, 15_000))) {
+  // ── Step 3: click "Current View" in the open dialog ────────────────────────
+  await onProgress("dl-step3: clicking 'Current View'");
+  if (!(await clickCurrentView(15_000))) {
     if (!viewer.isClosed()) await dumpPageControls(viewer, onProgress);
-    throw new Error(
-      "Download menu opened but no recognised option found. " +
-      "See [diag] lines above.",
-    );
+    throw new Error("Download dialog open but could not click 'Current View' — see [diag] lines above.");
   }
 
   const download = await downloadPromise;

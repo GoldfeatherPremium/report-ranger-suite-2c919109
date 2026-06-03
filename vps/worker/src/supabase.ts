@@ -61,6 +61,8 @@ export type SlotInfo = {
   slot_id: string;
   slot_label: string;
   submit_url: string | null;
+  cooldown_hours: number;
+  last_submitted_at: string | null;
   account_id: string;
   account_label: string;
   email: string;
@@ -84,23 +86,36 @@ export async function claimNextJob(workerId: string): Promise<Job | null> {
 export async function getSlotInfo(slotId: string): Promise<SlotInfo> {
   const { data: slot, error: e1 } = await supabase
     .from("turnitin_slots")
-    .select("id,label,submit_url,account_id, turnitin_accounts(label,email,login_url)")
+    .select("id,label,submit_url,cooldown_hours,account_id, turnitin_accounts(label,email,login_url)")
     .eq("id", slotId)
     .single();
   if (e1) throw e1;
-  const { data: pwd, error: e2 } = await supabase.rpc("decrypt_account_password", { account: slot.account_id });
-  if (e2) throw e2;
+
+  const [pwdResult, lastUsageResult] = await Promise.all([
+    supabase.rpc("decrypt_account_password", { account: slot.account_id }),
+    supabase
+      .from("turnitin_slot_usage")
+      .select("submitted_at")
+      .eq("slot_id", slotId)
+      .order("submitted_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ]);
+  if (pwdResult.error) throw pwdResult.error;
+
   const acc = (slot as unknown as { turnitin_accounts: { label: string; email: string; login_url: string } | { label: string; email: string; login_url: string }[] }).turnitin_accounts;
   const account = Array.isArray(acc) ? acc[0] : acc;
   return {
     slot_id: slot.id as string,
     slot_label: slot.label as string,
     submit_url: (slot.submit_url as string | null) ?? null,
+    cooldown_hours: (slot.cooldown_hours as number | null) ?? 24,
+    last_submitted_at: (lastUsageResult.data?.submitted_at as string | null) ?? null,
     account_id: slot.account_id as string,
     account_label: account.label,
     email: account.email,
     login_url: account.login_url,
-    password: pwd as unknown as string,
+    password: pwdResult.data as unknown as string,
   };
 }
 

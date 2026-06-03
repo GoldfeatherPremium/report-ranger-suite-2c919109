@@ -57,13 +57,25 @@ async function locateInAnyFrame(page: Page, sel: string): Promise<Frame | null> 
   return null;
 }
 
+// Use real mouse coordinates so Turnitin's event.isTrusted check passes.
+async function mouseClick(page: Page, sel: string): Promise<boolean> {
+  const frame = page.mainFrame();
+  const n = await frame.locator(sel).count().catch(() => 0);
+  if (n === 0) return false;
+  const box = await frame.locator(sel).first().boundingBox().catch(() => null);
+  if (!box) return false;
+  const cx = Math.round(box.x + box.width / 2);
+  const cy = Math.round(box.y + box.height / 2);
+  await page.mouse.move(cx, cy);
+  await page.waitForTimeout(300);
+  await page.mouse.click(cx, cy);
+  return true;
+}
+
 async function clickAnywhere(page: Page, sel: string, ms: number): Promise<boolean> {
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
-    const f = await locateInAnyFrame(page, sel);
-    if (f) {
-      try { await f.locator(sel).first().click({ timeout: 5_000 }); return true; } catch { /* retry */ }
-    }
+    if (await mouseClick(page, sel)) return true;
     await page.waitForTimeout(500);
   }
   return false;
