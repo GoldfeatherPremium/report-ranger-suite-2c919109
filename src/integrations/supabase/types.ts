@@ -469,15 +469,17 @@ export type Database = {
           isSetofReturn: false
         }
       }
-      cancel_job: { Args: { p_job_id: string }; Returns: undefined }
       decrypt_account_password: { Args: { account: string }; Returns: string }
       encrypt_account_password: { Args: { plain: string }; Returns: string }
       is_admin: { Args: never; Returns: boolean }
+      reassign_job_slot: {
+        Args: { p_exclude_slot_ids: string[]; p_job_id: string }
+        Returns: string
+      }
       requeue_stuck_jobs: {
         Args: { p_max_age_minutes?: number }
         Returns: number
       }
-      retry_job: { Args: { p_job_id: string }; Returns: undefined }
     }
     Enums: {
       job_state:
