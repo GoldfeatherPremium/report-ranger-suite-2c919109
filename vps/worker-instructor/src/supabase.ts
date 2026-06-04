@@ -154,6 +154,25 @@ export async function uploadReport(
   return path;
 }
 
+// Upload a debug screenshot to the reports bucket and return a 7-day signed URL
+// so failures are viewable without SSHing into the VPS. Best-effort: any error
+// returns null and never interrupts the job.
+export async function uploadDebugScreenshot(name: string, png: Buffer): Promise<string | null> {
+  try {
+    const safe = name.replace(/[^a-z0-9_-]+/gi, "-").slice(0, 60);
+    const path = `debug/${safe}-${Date.now()}.png`;
+    const { error } = await supabase.storage.from("reports").upload(path, png, {
+      contentType: "image/png",
+      upsert: true,
+    });
+    if (error) return null;
+    const { data } = await supabase.storage.from("reports").createSignedUrl(path, 60 * 60 * 24 * 7);
+    return data?.signedUrl ?? path;
+  } catch {
+    return null;
+  }
+}
+
 export async function setAiReportStatus(jobId: string, status: "pending" | "ready" | "failed") {
   await supabase.from("jobs").update({ ai_report_status: status }).eq("id", jobId);
 }

@@ -6,6 +6,8 @@ import type { AssignmentInfo } from "./supabase.js";
 import { aiDetectPageState } from "./ai-resolver.js";
 import { findElementWithAI } from "./ai-helper.js";
 import { locateByVision, visionAvailable } from "./resolve/vision.js";
+import { settle } from "./resolve/resolver.js";
+import { uploadDebugScreenshot } from "./supabase.js";
 
 export class ResubmitDeniedError extends Error {
   constructor(assignmentLabel: string) {
@@ -478,12 +480,21 @@ export async function submitToTurnitin(opts: {
             await tryClickInAnyFrame(page, SEL.confirmResubmission, 3_000);
             await page.waitForTimeout(500);
             if (await isResubmitDenied(page, onProgress)) throw new ResubmitDeniedError(assignment.assignment_label);
-            submitFileOpened = true;
+            // Postcondition: the upload dialog must actually have opened.
+            if (await settle(page, () => uploadDialogReady(page), 6_000)) {
+              submitFileOpened = true;
+            } else {
+              await onProgress("step1: Resubmit clicked but upload dialog did not appear — retrying");
+            }
           } else if (hasSubmitFile) {
             await onProgress("step1: empty slot — clicking 'Submit file'");
             if (!(await clickItemBySelector(page, SEL.submitFileMenuItem)))
               await smartClick(page, SEL.submitFileMenuItem, "the Submit file dropdown item", onProgress, 5_000);
-            submitFileOpened = true;
+            if (await settle(page, () => uploadDialogReady(page), 6_000)) {
+              submitFileOpened = true;
+            } else {
+              await onProgress("step1: Submit clicked but upload dialog did not appear — retrying");
+            }
           } else {
             // Popup didn't contain a submission action — close and retry.
             await onProgress("step1: popup had no Resubmit/Submit item — retrying");
@@ -1039,6 +1050,15 @@ function dropdownHas(labels: string[], re: RegExp): boolean {
   return labels.some((l) => re.test(l));
 }
 
+// Postcondition for step 1: did clicking Resubmit/Submit actually open the
+// upload dialog? (file input / Browse button / title field / Upload button)
+async function uploadDialogReady(page: Page): Promise<boolean> {
+  return (await locateInAnyFrame(page, SEL.fileInput))            !== null
+      || (await locateInAnyFrame(page, SEL.browseFilesButton))    !== null
+      || (await locateInAnyFrame(page, SEL.submissionTitleInput)) !== null
+      || (await locateInAnyFrame(page, SEL.uploadAndPreviewButton)) !== null;
+}
+
 // Collect page-relative click points for every ⋮ "More actions" button.
 // Turnitin's controls are Stencil web components, and the table's ⋮ buttons can
 // live inside (open) shadow roots that plain locators miss — so we deep-walk the
@@ -1183,8 +1203,13 @@ async function captureDebugState(page: Page, tag: string, onProgress: Logger): P
     }
 
     const path = `/tmp/tii-${tag}-${Date.now()}.png`;
-    await page.screenshot({ path, fullPage: true }).catch(() => {});
+    const png = await page.screenshot({ path, fullPage: true }).catch(() => null);
     await onProgress(`[dbg ${tag}] full-page screenshot saved: ${path}`);
+    // Also push it to the reports bucket so it's viewable without SSH.
+    if (png) {
+      const url = await uploadDebugScreenshot(tag, png);
+      if (url) await onProgress(`[dbg ${tag}] screenshot URL: ${url}`);
+    }
   } catch (e) {
     await onProgress(`[dbg ${tag}] capture failed: ${e instanceof Error ? e.message : String(e)}`);
   }
