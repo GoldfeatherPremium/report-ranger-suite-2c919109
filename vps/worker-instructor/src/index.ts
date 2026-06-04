@@ -11,15 +11,19 @@ function envNum(key: string, fallback: number): number {
   return v > 0 ? v : fallback;
 }
 
-const WORKER_ID          = process.env.WORKER_ID ?? `instructor-${process.pid}`;
-const HEADLESS           = (process.env.HEADLESS ?? "true") === "true";
+const WORKER_ID             = process.env.WORKER_ID ?? `instructor-${process.pid}`;
+const HEADLESS              = (process.env.HEADLESS ?? "true") === "true";
 const SUBMISSION_TIMEOUT_MS = envNum("SUBMISSION_TIMEOUT_MS", 900_000);
 const UPLOAD_TIMEOUT_MS     = envNum("UPLOAD_TIMEOUT_MS",     600_000);
 const POLL_INTERVAL_MS      = envNum("POLL_INTERVAL_MS",       30_000);
 const CLAIM_IDLE_MS         = envNum("CLAIM_IDLE_MS",          10_000);
 const HEARTBEAT_MS          = envNum("HEARTBEAT_MS",           30_000);
-const CONCURRENCY           = envNum("CONCURRENCY",                 2);
+const CONCURRENCY           = envNum("CONCURRENCY",                 5);
 const JOB_TIMEOUT_MS        = envNum("JOB_TIMEOUT_MS",      3_600_000);
+// How long to wait for the AI Writing score after similarity arrives.
+// If the score doesn't appear in this window, the job still completes
+// with the Similarity PDF only and ai_report_status='failed'.
+const AI_WRITING_TIMEOUT_MS = envNum("AI_WRITING_TIMEOUT_MS", 20 * 60_000); // 20 min
 
 let activeJobs = 0;
 let shuttingDown = false;
@@ -67,6 +71,7 @@ async function processOne(): Promise<boolean> {
           submissionTimeoutMs: SUBMISSION_TIMEOUT_MS,
           pollIntervalMs: POLL_INTERVAL_MS,
           uploadTimeoutMs: UPLOAD_TIMEOUT_MS,
+          aiWaitTimeoutMs: AI_WRITING_TIMEOUT_MS,
           existingSubmissionId: currentSubmissionId,
           onProgress: async (m) => { await log(WORKER_ID, job.id, "info", m); await touchJob(job.id); },
           onSubmitted: async (sid) => {
