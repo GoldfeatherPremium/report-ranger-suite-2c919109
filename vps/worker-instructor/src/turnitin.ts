@@ -516,9 +516,12 @@ export async function submitToTurnitin(opts: {
         await onProgress(`step1: Tier-3 agent attempting row #${rowIndex + 1}`);
         const ok = await visionAgent(
           page,
-          `This is a Turnitin instructor "Submission list" table. Open the three-dot ` +
-          `vertical "⋮ More actions" menu on row ${rowIndex + 1} (counting from the top), ` +
-          `then click "Resubmit file". The goal is achieved when the file upload dialog appears.`,
+          `This is a Turnitin instructor "Submission list" page. First, if any language/region, ` +
+          `cookie, or onboarding dialog is open (e.g. a list of languages with a "Proceed" button), ` +
+          `dismiss it by choosing English and/or clicking Proceed/Accept/Close so the submissions ` +
+          `table is visible. Then open the three-dot vertical "⋮ More actions" menu on row ` +
+          `${rowIndex + 1} (counting from the top of the table) and click "Resubmit file". ` +
+          `The goal is achieved when the file upload dialog appears.`,
           () => uploadDialogReady(page),
           onProgress,
         );

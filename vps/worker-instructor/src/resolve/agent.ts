@@ -1,5 +1,5 @@
 import type { Page } from "playwright";
-import { nextGeminiClient } from "./gemini.js";
+import { nextGeminiClient, extractJson } from "./gemini.js";
 
 // Tier-3 "computer use" loop on Gemini (free). When DOM (Tier 1) and a single
 // vision click (Tier 2) both fail, this drives the page step by step: screenshot
@@ -61,7 +61,9 @@ Avoid repeating an action that already appears in ACTIONS SO FAR if it had no ef
         { inlineData: { mimeType: "image/png", data: shot.toString("base64") } },
         { text: prompt },
       ]);
-      act = JSON.parse(res.response.text()) as AgentAction;
+      const parsed = extractJson<AgentAction>(res.response.text());
+      if (!parsed || !parsed.action) { await log(`[agent] step ${step}: unparseable response`); await page.waitForTimeout(600); continue; }
+      act = parsed;
     } catch (e) {
       await log(`[agent] step ${step} error: ${(e as Error).message.split("\n")[0]}`);
       await page.waitForTimeout(600);

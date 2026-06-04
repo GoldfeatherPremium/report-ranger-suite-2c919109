@@ -1,6 +1,6 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import type { Page } from "playwright";
-import { nextGeminiClient, geminiAvailable } from "./gemini.js";
+import { nextGeminiClient, geminiAvailable, extractJson } from "./gemini.js";
 
 // Tier-2 element resolver: locate a target on screen by VISION when DOM
 // automation fails. Reuses the shared Gemini key pool with round-robin
@@ -49,8 +49,8 @@ confidence is 0..1. If the element is not visible, respond {"found": false}.`;
       { inlineData: { mimeType: "image/png", data: shot!.toString("base64") } },
       { text: prompt },
     ]);
-    const j = JSON.parse(res.response.text()) as { found?: boolean; x?: number; y?: number; confidence?: number };
-    if (!j.found || typeof j.x !== "number" || typeof j.y !== "number") return null;
+    const j = extractJson<{ found?: boolean; x?: number; y?: number; confidence?: number }>(res.response.text());
+    if (!j || !j.found || typeof j.x !== "number" || typeof j.y !== "number") return null;
     const confidence = typeof j.confidence === "number" ? j.confidence : 0.5;
     if (confidence < 0.4) return null;
     // Clamp into the viewport so a hallucinated coordinate can't click off-screen.

@@ -18,3 +18,19 @@ export function nextGeminiClient(): GoogleGenerativeAI | null {
 export function geminiAvailable(): boolean {
   return keys.length > 0;
 }
+
+// Robustly extract a JSON object from a model response. Gemini sometimes wraps
+// JSON in ```fences``` or prefaces it with prose ("Here is the JSON: {…}")
+// despite responseMimeType, which breaks a naive JSON.parse. We strip fences,
+// then fall back to the first balanced {…} slice.
+export function extractJson<T = unknown>(text: string): T | null {
+  if (!text) return null;
+  let t = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  try { return JSON.parse(t) as T; } catch { /* fall through */ }
+  const start = t.indexOf("{");
+  const end = t.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    try { return JSON.parse(t.slice(start, end + 1)) as T; } catch { /* fall through */ }
+  }
+  return null;
+}
