@@ -444,9 +444,9 @@ export async function submitToTurnitin(opts: {
     // Just wait for the similarity score on this same slot's dashboard.
     if (existingSubmissionId) {
       await onProgress(`resuming score-wait (already submitted, id=${existingSubmissionId})`);
-      const submissionId = await waitForSimilarity(page, submissionTimeoutMs, pollIntervalMs, onProgress);
+      const { submissionId, similarityPercent } = await waitForSimilarity(page, submissionTimeoutMs, pollIntervalMs, onProgress);
       const pdf = await downloadSimilarityPdf(page, onProgress);
-      return { pdf, submissionId: submissionId ?? existingSubmissionId };
+      return { pdf, submissionId: submissionId ?? existingSubmissionId, similarityPercent };
     }
 
     // ── Step 1: decide path based on what is on the page ──────────────────────
