@@ -280,12 +280,17 @@ export async function submitToTurnitin(opts: {
   pollIntervalMs: number;
   uploadTimeoutMs: number;
   aiWaitTimeoutMs: number;
+  // Which submission-table row this lane should act on (0-based, top to bottom).
+  // Each concurrent worker lane is given a distinct row so 5 lanes can resubmit
+  // 5 different documents in parallel without colliding on the same row.
+  rowIndex?: number;
   existingSubmissionId?: string | null;
   onSubmitted?: (submissionId: string) => Promise<void>;
   onProgress: (msg: string) => Promise<void>;
 }): Promise<InstructorSubmissionResult> {
   const { assignment, fileBytes, originalName, headless, submissionTimeoutMs, pollIntervalMs,
           uploadTimeoutMs, aiWaitTimeoutMs, existingSubmissionId, onSubmitted, onProgress } = opts;
+  const rowIndex = Math.max(0, opts.rowIndex ?? 0);
 
   const titleBase = originalName.replace(/\.[^.]+$/, "");
 
@@ -371,16 +376,23 @@ export async function submitToTurnitin(opts: {
       return { similarityPdf, aiPdf, submissionId: submissionId ?? existingSubmissionId };
     }
 
-    // ── Step 1: find empty row → ⋮ → "Submit file" ────────────────────────────
-    await onProgress("step1: finding empty student row (⋮ → Submit file)");
+    // ── Step 1: open the ⋮ menu on OUR assigned row → Resubmit/Submit file ──────
+    // We do NOT hunt for an empty student. Each worker lane owns a fixed row
+    // (row 0 → lane 1, row 1 → lane 2, …) so up to N lanes resubmit N different
+    // documents in parallel without colliding. We click that row's ⋮ "More
+    // actions" button, then pick "Resubmit file" (existing submission) or
+    // "Submit file" (empty slot) from the popup.
+    await onProgress(`step1: opening ⋮ menu on row #${rowIndex + 1}`);
     let submitFileOpened = false;
     {
       const step1Deadline = Date.now() + 90_000;
       await scrollTableIntoView(page);
 
       while (Date.now() < step1Deadline && !submitFileOpened) {
-        // Collect ⋮ "More actions" buttons as page-relative click points.
+        // Collect ⋮ buttons as page-relative click points, sorted top→bottom so
+        // index N reliably maps to the Nth visible row.
         const dotBoxes = await collectMoreDotsBoxes(page);
+        dotBoxes.sort((a, b) => a.y - b.y);
 
         // AI fallback when the selectors miss every ⋮ button.
         if (dotBoxes.length === 0) {
@@ -399,59 +411,57 @@ export async function submitToTurnitin(opts: {
           continue;
         }
 
-        for (const dot of dotBoxes) {
-          if (submitFileOpened) break;
-          try {
-            // Open this row's dropdown with a real mouse click.
-            await page.mouse.move(Math.round(dot.x), Math.round(dot.y));
-            await page.waitForTimeout(150);
-            await page.mouse.click(Math.round(dot.x), Math.round(dot.y));
-            await page.waitForTimeout(700);
+        // Clamp to the rows that actually exist (e.g. lane 4 but only 3 rows).
+        const idx = Math.min(rowIndex, dotBoxes.length - 1);
+        const dot = dotBoxes[idx];
+        await onProgress(`step1: ${dotBoxes.length} row(s) visible — clicking ⋮ on row #${idx + 1}`);
 
-            // Read the open dropdown's item labels (title attr / shadow text).
-            const labels = await readDropdownItemLabels(page);
-            let hasSubmitFile = dropdownHas(labels, SUBMIT_FILE_RE);
-            let hasResubmit   = dropdownHas(labels, RESUBMIT_RE);
-            // Fall back to selector-based detection if the DOM scan found nothing.
-            if (!hasSubmitFile && !hasResubmit) {
-              hasSubmitFile = (await locateInAnyFrame(page, SEL.submitFileMenuItem)) !== null;
-              hasResubmit   = (await locateInAnyFrame(page, SEL.resubmitMenuItem))   !== null;
-            }
-            await onProgress(`step1: dropdown items = [${labels.join(" | ") || "none"}] (submit=${hasSubmitFile} resubmit=${hasResubmit})`);
+        try {
+          // Open the row's dropdown with a real mouse click.
+          await page.mouse.move(Math.round(dot.x), Math.round(dot.y));
+          await page.waitForTimeout(150);
+          await page.mouse.click(Math.round(dot.x), Math.round(dot.y));
+          await page.waitForTimeout(800);
 
-            if (hasSubmitFile) {
-              await onProgress("step1: empty row found — clicking 'Submit file'");
-              if (!(await clickItemBySelector(page, SEL.submitFileMenuItem)))
-                await smartClick(page, SEL.submitFileMenuItem, "the Submit file dropdown item", onProgress, 5_000);
-              submitFileOpened = true;
-            } else if (hasResubmit) {
-              await onProgress("step1: used row — clicking 'Resubmit file'");
-              if (await isResubmitDenied(page, onProgress)) {
-                await page.keyboard.press("Escape");
-                await page.waitForTimeout(400);
-              } else {
-                if (!(await clickItemBySelector(page, SEL.resubmitMenuItem)))
-                  await smartClick(page, SEL.resubmitMenuItem, "the Resubmit file dropdown item", onProgress, 5_000);
-                await page.waitForTimeout(600);
-                await onProgress("step1: confirming resubmit dialog");
-                await smartClick(page, SEL.confirmResubmission, "the Confirm button in the Resubmit file dialog", onProgress, 10_000);
-                await page.waitForTimeout(1_000);
-                if (await isResubmitDenied(page, onProgress)) throw new ResubmitDeniedError(assignment.assignment_label);
-                submitFileOpened = true;
-              }
-            } else {
-              // Not a submission menu — close it and try the next row.
-              await page.keyboard.press("Escape");
-              await page.waitForTimeout(300);
-            }
-          } catch (err) {
-            if (err instanceof ResubmitDeniedError) throw err; // propagate to caller
-            /* otherwise try next row */
+          // Read the open popup's item labels (title attr / shadow text).
+          const labels = await readDropdownItemLabels(page);
+          let hasResubmit   = dropdownHas(labels, RESUBMIT_RE);
+          let hasSubmitFile = dropdownHas(labels, SUBMIT_FILE_RE);
+          if (!hasResubmit && !hasSubmitFile) {
+            hasResubmit   = (await locateInAnyFrame(page, SEL.resubmitMenuItem))   !== null;
+            hasSubmitFile = (await locateInAnyFrame(page, SEL.submitFileMenuItem)) !== null;
           }
-        }
-        if (!submitFileOpened) {
-          await scrollTableIntoView(page);
-          await page.waitForTimeout(1_000);
+          await onProgress(`step1: dropdown items = [${labels.join(" | ") || "none"}] (resubmit=${hasResubmit} submit=${hasSubmitFile})`);
+
+          if (hasResubmit) {
+            if (await isResubmitDenied(page, onProgress)) throw new ResubmitDeniedError(assignment.assignment_label);
+            await onProgress("step1: clicking 'Resubmit file'");
+            if (!(await clickItemBySelector(page, SEL.resubmitMenuItem)))
+              await smartClick(page, SEL.resubmitMenuItem, "the Resubmit file dropdown item", onProgress, 5_000);
+            await page.waitForTimeout(800);
+            // Some skins show a "this will replace the existing paper" confirm
+            // before the upload form — click it if present (best effort).
+            await tryClickInAnyFrame(page, SEL.confirmResubmission, 3_000);
+            await page.waitForTimeout(500);
+            if (await isResubmitDenied(page, onProgress)) throw new ResubmitDeniedError(assignment.assignment_label);
+            submitFileOpened = true;
+          } else if (hasSubmitFile) {
+            await onProgress("step1: empty slot — clicking 'Submit file'");
+            if (!(await clickItemBySelector(page, SEL.submitFileMenuItem)))
+              await smartClick(page, SEL.submitFileMenuItem, "the Submit file dropdown item", onProgress, 5_000);
+            submitFileOpened = true;
+          } else {
+            // Popup didn't contain a submission action — close and retry.
+            await onProgress("step1: popup had no Resubmit/Submit item — retrying");
+            await page.keyboard.press("Escape");
+            await page.waitForTimeout(500);
+            await scrollTableIntoView(page);
+            await page.waitForTimeout(800);
+          }
+        } catch (err) {
+          if (err instanceof ResubmitDeniedError) throw err; // propagate to caller
+          await page.keyboard.press("Escape").catch(() => {});
+          await page.waitForTimeout(500);
         }
       }
 
@@ -461,7 +471,7 @@ export async function submitToTurnitin(opts: {
         const state = await aiDetectPageState(diagLines, page.url(), await page.title().catch(() => ""), onProgress);
         if (state === "captcha") throw new Error("CAPTCHA on assignment page.");
         if (state === "login")   throw new Error("Redirected to login — session expired.");
-        throw new Error("No empty student row found — all slots in cooldown or submit_url wrong. See [diag].");
+        throw new Error(`Could not open the ⋮ menu / Resubmit on row #${rowIndex + 1} — see [diag].`);
       }
     }
 

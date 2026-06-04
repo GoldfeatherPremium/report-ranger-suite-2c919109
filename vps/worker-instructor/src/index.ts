@@ -20,6 +20,20 @@ const CLAIM_IDLE_MS         = envNum("CLAIM_IDLE_MS",          10_000);
 const HEARTBEAT_MS          = envNum("HEARTBEAT_MS",           30_000);
 const CONCURRENCY           = envNum("CONCURRENCY",                 5);
 const JOB_TIMEOUT_MS        = envNum("JOB_TIMEOUT_MS",      3_600_000);
+// Number of submission-table rows we resubmit into in parallel. Each in-flight
+// job claims a distinct row (0-based, top to bottom) so concurrent lanes don't
+// fight over the same ⋮ menu. Defaults to the concurrency level.
+const MAX_ROWS              = envNum("MAX_ROWS",          CONCURRENCY);
+
+// In-process allocator handing each concurrent job a distinct row index.
+const rowsInUse = new Set<number>();
+function claimRow(): number | null {
+  for (let i = 0; i < MAX_ROWS; i++) {
+    if (!rowsInUse.has(i)) { rowsInUse.add(i); return i; }
+  }
+  return null;
+}
+function releaseRow(i: number): void { rowsInUse.delete(i); }
 // How long to wait for the AI Writing score after similarity arrives.
 // If the score doesn't appear in this window, the job still completes
 // with the Similarity PDF only and ai_report_status='failed'.
@@ -47,6 +61,15 @@ async function processOne(): Promise<boolean> {
   if (!job) return false;
   activeJobs++;
 
+  // Claim a distinct table row for this job. With MAX_ROWS >= CONCURRENCY a free
+  // row is always available; if every row is momentarily busy, wait briefly.
+  let rowIndex = claimRow();
+  while (rowIndex == null && !shuttingDown) {
+    await sleep(2_000);
+    rowIndex = claimRow();
+  }
+  if (rowIndex == null) rowIndex = 0;
+
   let currentSubmissionId: string | null = job.turnitin_submission_id;
   const jobDeadline = Date.now() + JOB_TIMEOUT_MS;
   const deniedAssignments: string[] = [];
@@ -72,6 +95,7 @@ async function processOne(): Promise<boolean> {
           pollIntervalMs: POLL_INTERVAL_MS,
           uploadTimeoutMs: UPLOAD_TIMEOUT_MS,
           aiWaitTimeoutMs: AI_WRITING_TIMEOUT_MS,
+          rowIndex,
           existingSubmissionId: currentSubmissionId,
           onProgress: async (m) => { await log(WORKER_ID, job.id, "info", m); await touchJob(job.id); },
           onSubmitted: async (sid) => {
@@ -129,6 +153,7 @@ async function processOne(): Promise<boolean> {
     await log(WORKER_ID, job.id, "error", `fatal: ${msg}`);
     await markJobFailed(job.id, job.attempts, job.max_attempts, msg, currentSubmissionId);
   } finally {
+    releaseRow(rowIndex);
     activeJobs--;
   }
   return true;
