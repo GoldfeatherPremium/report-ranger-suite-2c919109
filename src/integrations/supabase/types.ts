@@ -747,6 +747,7 @@ export type Database = {
         }
         Returns: string
       }
+      cancel_job: { Args: { p_job_id: string }; Returns: undefined }
       claim_next_instructor_job: {
         Args: { p_worker_id: string }
         Returns: {
@@ -854,6 +855,7 @@ export type Database = {
         Args: { p_max_age_minutes?: number }
         Returns: number
       }
+      retry_job: { Args: { p_job_id: string }; Returns: undefined }
     }
     Enums: {
       job_state:
