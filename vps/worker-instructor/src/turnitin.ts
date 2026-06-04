@@ -1,4 +1,4 @@
-import { chromium, Browser, Page, Frame, BrowserContext, type Locator } from "playwright";
+import { chromium, Browser, Page, Frame, BrowserContext } from "playwright";
 import { writeFile, mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,7 +30,6 @@ const SEL = {
   // class / aria-haspopup / text selectors below are what actually match it.
   moreDotsButton: [
     'button.options-dropdown',
-    'button[aria-haspopup="true"]',
     'button:has-text("More actions")',
     '[aria-label="More"]',
     '[aria-label*="more options" i]',
@@ -391,7 +390,7 @@ export async function submitToTurnitin(opts: {
       while (Date.now() < step1Deadline && !submitFileOpened) {
         // Collect ⋮ buttons as page-relative click points, sorted top→bottom so
         // index N reliably maps to the Nth visible row.
-        const dotBoxes = await collectMoreDotsBoxes(page);
+        const dotBoxes = await collectMoreDotsBoxes(page, onProgress);
         dotBoxes.sort((a, b) => a.y - b.y);
 
         // AI fallback when the selectors miss every ⋮ button.
@@ -974,18 +973,26 @@ async function readDropdownItemLabels(page: Page): Promise<string[]> {
         "li.dropdown-item",
       ].join(",");
       const out: string[] = [];
-      for (const el of Array.from(document.querySelectorAll(SEL))) {
-        const he = el as HTMLElement;
-        const rect = he.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) continue; // not rendered
-        const label = (
-          he.getAttribute("title") ||
-          he.shadowRoot?.textContent ||
-          he.textContent ||
-          ""
-        ).trim();
-        if (label) out.push(label);
-      }
+      const collect = (root: Document | ShadowRoot) => {
+        for (const el of Array.from(root.querySelectorAll(SEL))) {
+          const he = el as HTMLElement;
+          const rect = he.getBoundingClientRect();
+          if (rect.width === 0 || rect.height === 0) continue; // not rendered
+          const label = (
+            he.getAttribute("title") ||
+            he.shadowRoot?.textContent ||
+            he.textContent ||
+            ""
+          ).trim();
+          if (label) out.push(label);
+        }
+        // pierce open shadow roots
+        for (const el of Array.from(root.querySelectorAll("*"))) {
+          const sr = (el as HTMLElement).shadowRoot;
+          if (sr) collect(sr);
+        }
+      };
+      collect(document);
       return out;
     }).catch(() => [] as string[]);
     labels.push(...found);
@@ -997,20 +1004,57 @@ function dropdownHas(labels: string[], re: RegExp): boolean {
   return labels.some((l) => re.test(l));
 }
 
-// Collect page-relative click points for every ⋮ "More actions" button, across
-// all frames. locator.boundingBox() is already relative to the main frame, so no
-// iframe-offset math is needed here.
-async function collectMoreDotsBoxes(page: Page): Promise<{ x: number; y: number }[]> {
+// Collect page-relative click points for every ⋮ "More actions" button.
+// Turnitin's controls are Stencil web components, and the table's ⋮ buttons can
+// live inside (open) shadow roots that plain locators miss — so we deep-walk the
+// DOM (piercing open shadow roots) in every frame and match the ⋮ specifically
+// by its `options-dropdown` class or "More actions" accessible name. The page's
+// LANGUAGE selector also uses aria-haspopup, so we explicitly exclude it.
+async function collectMoreDotsBoxes(page: Page, onProgress: Logger): Promise<{ x: number; y: number }[]> {
   const boxes: { x: number; y: number }[] = [];
+  const labels: string[] = [];
+
   for (const frame of page.frames()) {
-    const locs = await frame.locator(SEL.moreDotsButton).all().catch(() => [] as Locator[]);
-    for (const loc of locs) {
-      const b = await loc.boundingBox().catch(() => null);
-      if (b && b.width > 0 && b.height > 0) {
-        boxes.push({ x: b.x + b.width / 2, y: b.y + b.height / 2 });
-      }
+    let offsetX = 0, offsetY = 0;
+    if (frame !== page.mainFrame()) {
+      const fe = await frame.frameElement().catch(() => null);
+      const fb = fe ? await fe.boundingBox().catch(() => null) : null;
+      if (fb) { offsetX = fb.x; offsetY = fb.y; }
+    }
+
+    const found = await frame.evaluate(() => {
+      const LANG = /language|english|español|deutsch|français|italiano|nederlands|polski|portugu|čeština|cesky|română|romana|svenska|suomi|türkçe|turkce|tiếng|中文|日本語|한국어/i;
+      const out: { x: number; y: number; label: string; cls: string }[] = [];
+      const consider = (el: Element) => {
+        const he = el as HTMLElement;
+        const label = (he.getAttribute("aria-label") || he.getAttribute("title") || he.textContent || "").trim();
+        const cls   = typeof he.className === "string" ? he.className : (he.getAttribute("class") || "");
+        const l = label.toLowerCase();
+        if (LANG.test(l)) return;                                   // skip the language picker
+        const isMore = /options-dropdown/.test(cls) || /more actions|more options/.test(l) || l === "more";
+        if (!isMore) return;
+        const r = he.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) return;
+        out.push({ x: r.x + r.width / 2, y: r.y + r.height / 2, label, cls });
+      };
+      const walk = (root: Document | ShadowRoot) => {
+        for (const el of Array.from(root.querySelectorAll('button, [role="button"], [aria-haspopup]'))) consider(el);
+        for (const el of Array.from(root.querySelectorAll("*"))) {
+          const sr = (el as HTMLElement).shadowRoot;
+          if (sr) walk(sr);
+        }
+      };
+      walk(document);
+      return out;
+    }).catch(() => [] as { x: number; y: number; label: string; cls: string }[]);
+
+    for (const f of found) {
+      boxes.push({ x: f.x + offsetX, y: f.y + offsetY });
+      labels.push(`${f.label || "∅"}[${(f.cls || "").slice(0, 20)}]`);
     }
   }
+
+  await onProgress(`step1: ⋮ candidates(${boxes.length}) = [${labels.slice(0, 8).join(" | ") || "none"}]`);
   return boxes;
 }
 
