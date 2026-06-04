@@ -22,6 +22,7 @@ type Class = {
 
 function Page() {
   const { accountId } = Route.useParams();
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [toDelete, setToDelete] = useState<Class | null>(null);
 
