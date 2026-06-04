@@ -175,6 +175,7 @@ export async function markJobDone(jobId: string, submissionId: string | null) {
   await supabase.from("turnitin_instructor_slot_usage")
     .update({ freed_at: new Date().toISOString(), turnitin_submission_id: submissionId })
     .eq("job_id", jobId).is("freed_at", null);
+  await supabase.rpc("enqueue_job_callback", { p_job_id: jobId, p_event: "job.completed" });
 }
 
 export async function markJobFailed(
@@ -191,6 +192,7 @@ export async function markJobFailed(
     await supabase.from("turnitin_instructor_slot_usage")
       .update({ freed_at: new Date().toISOString() })
       .eq("job_id", jobId).is("freed_at", null);
+    await supabase.rpc("enqueue_job_callback", { p_job_id: jobId, p_event: "job.failed" });
   } else if (alreadySubmitted) {
     const retryAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
     await supabase.from("jobs").update({

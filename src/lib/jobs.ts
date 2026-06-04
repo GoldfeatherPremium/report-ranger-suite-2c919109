@@ -69,6 +69,9 @@ export async function uploadAndCreateJob(
     queued_at: new Date().toISOString(),
     max_attempts: 5,
     pipeline,
+    slot_id: null,
+    instructor_assignment_id: null,
+    ai_report_status: pipeline === "instructor" ? "pending" : null,
   });
   if (insErr) {
     await supabase.storage.from("documents").remove([key]);

@@ -14,6 +14,13 @@ const CreateSchema = z.object({
   metadata: z.record(z.string(), z.unknown()).optional(),
   pipeline: z.enum(["student", "instructor"]).optional(),
   report_type: z.enum(["similarity", "similarity_ai"]).optional(),
+}).superRefine((input, ctx) => {
+  if (input.pipeline === "student" && input.report_type === "similarity_ai") {
+    ctx.addIssue({ code: "custom", message: "similarity_ai jobs must use the instructor pipeline", path: ["pipeline"] });
+  }
+  if (input.pipeline === "instructor" && input.report_type === "similarity") {
+    ctx.addIssue({ code: "custom", message: "similarity-only jobs must use the student pipeline", path: ["pipeline"] });
+  }
 });
 
 export const Route = createFileRoute("/api/public/v1/jobs")({
@@ -69,6 +76,9 @@ export const Route = createFileRoute("/api/public/v1/jobs")({
           metadata: input.metadata ?? {},
           queued_at: new Date().toISOString(),
           pipeline,
+          slot_id: null,
+          instructor_assignment_id: null,
+          ai_report_status: pipeline === "instructor" ? "pending" : null,
         };
         const { data: job, error } = await supabaseAdmin
           .from("jobs")
