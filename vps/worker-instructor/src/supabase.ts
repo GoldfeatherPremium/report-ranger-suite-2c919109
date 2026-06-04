@@ -4,7 +4,13 @@ import WebSocket from "ws";
 const url = process.env.SUPABASE_URL;
 const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
 if (!url || !key) {
-  throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set");
+  const missing = [!url && "SUPABASE_URL", !key && "SUPABASE_SERVICE_ROLE_KEY"].filter(Boolean).join(", ");
+  throw new Error(
+    `Missing required env var(s): ${missing}. ` +
+    `Checked process env (cwd=${process.cwd()}). ` +
+    `Ensure vps/worker-instructor/.env exists and contains these keys, ` +
+    `or that systemd EnvironmentFile points at it.`,
+  );
 }
 
 assertServiceRoleKey(key);
