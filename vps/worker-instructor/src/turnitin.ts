@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { AssignmentInfo } from "./supabase.js";
 import { aiDetectPageState } from "./ai-resolver.js";
 import { findElementWithAI } from "./ai-helper.js";
+import { locateByVision, visionAvailable } from "./resolve/vision.js";
 
 export class ResubmitDeniedError extends Error {
   constructor(assignmentLabel: string) {
@@ -404,6 +405,16 @@ export async function submitToTurnitin(opts: {
           }
         }
 
+        // Tier 2 (vision): no ⋮ found by DOM at all — ask a vision model.
+        if (dotBoxes.length === 0 && visionAvailable()) {
+          const vdot = await locateByVision(
+            page,
+            `the three-dot vertical "⋮" More actions icon button in row ${rowIndex + 1} (counting from the top) of the student submissions table`,
+            onProgress,
+          );
+          if (vdot) dotBoxes.push({ x: vdot.x, y: vdot.y });
+        }
+
         if (dotBoxes.length === 0) {
           await onProgress("step1: no ⋮ buttons found yet — scrolling and waiting");
           await scrollTableIntoView(page);
@@ -424,20 +435,43 @@ export async function submitToTurnitin(opts: {
           await page.waitForTimeout(800);
 
           // Read the open popup's item labels (title attr / shadow text).
-          const labels = await readDropdownItemLabels(page);
-          let hasResubmit   = dropdownHas(labels, RESUBMIT_RE);
-          let hasSubmitFile = dropdownHas(labels, SUBMIT_FILE_RE);
-          if (!hasResubmit && !hasSubmitFile) {
-            hasResubmit   = (await locateInAnyFrame(page, SEL.resubmitMenuItem))   !== null;
-            hasSubmitFile = (await locateInAnyFrame(page, SEL.submitFileMenuItem)) !== null;
+          let labels = await readDropdownItemLabels(page);
+          let hasResubmit   = dropdownHas(labels, RESUBMIT_RE) || (await locateInAnyFrame(page, SEL.resubmitMenuItem))   !== null;
+          let hasSubmitFile = dropdownHas(labels, SUBMIT_FILE_RE) || (await locateInAnyFrame(page, SEL.submitFileMenuItem)) !== null;
+
+          // Tier 2 (vision): if the DOM click opened the wrong control (e.g. the
+          // language picker) or no menu, ask a vision model to find this row's ⋮.
+          if (!hasResubmit && !hasSubmitFile && visionAvailable()) {
+            await onProgress(`step1: DOM popup not a submission menu — vision fallback for row #${idx + 1}`);
+            await page.keyboard.press("Escape").catch(() => {});
+            await page.waitForTimeout(200);
+            const vdot = await locateByVision(
+              page,
+              `the three-dot vertical "⋮" More actions icon button in row ${idx + 1} (counting from the top) of the student submissions table`,
+              onProgress,
+            );
+            if (vdot) {
+              await page.mouse.move(vdot.x, vdot.y);
+              await page.waitForTimeout(120);
+              await page.mouse.click(vdot.x, vdot.y);
+              await page.waitForTimeout(800);
+              labels = await readDropdownItemLabels(page);
+              hasResubmit   = dropdownHas(labels, RESUBMIT_RE) || (await locateInAnyFrame(page, SEL.resubmitMenuItem))   !== null;
+              hasSubmitFile = dropdownHas(labels, SUBMIT_FILE_RE) || (await locateInAnyFrame(page, SEL.submitFileMenuItem)) !== null;
+            }
           }
           await onProgress(`step1: dropdown items = [${labels.join(" | ") || "none"}] (resubmit=${hasResubmit} submit=${hasSubmitFile})`);
 
           if (hasResubmit) {
             if (await isResubmitDenied(page, onProgress)) throw new ResubmitDeniedError(assignment.assignment_label);
             await onProgress("step1: clicking 'Resubmit file'");
-            if (!(await clickItemBySelector(page, SEL.resubmitMenuItem)))
-              await smartClick(page, SEL.resubmitMenuItem, "the Resubmit file dropdown item", onProgress, 5_000);
+            if (!(await clickItemBySelector(page, SEL.resubmitMenuItem))) {
+              const vr = visionAvailable()
+                ? await locateByVision(page, 'the "Resubmit file" option in the open dropdown menu', onProgress)
+                : null;
+              if (vr) { await page.mouse.move(vr.x, vr.y); await page.waitForTimeout(120); await page.mouse.click(vr.x, vr.y); }
+              else await smartClick(page, SEL.resubmitMenuItem, "the Resubmit file dropdown item", onProgress, 5_000);
+            }
             await page.waitForTimeout(800);
             // Some skins show a "this will replace the existing paper" confirm
             // before the upload form — click it if present (best effort).
