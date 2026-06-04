@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -22,6 +22,7 @@ type Class = {
 
 function Page() {
   const { accountId } = Route.useParams();
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [toDelete, setToDelete] = useState<Class | null>(null);
 
@@ -107,10 +108,17 @@ function Page() {
                   </span>
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <Button asChild variant="ghost" size="sm">
-                    <Link to="/admin/instructor/$accountId/$classId" params={{ accountId, classId: c.id }}>
-                      Assignments <ChevronRight className="ml-1 h-4 w-4" />
-                    </Link>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() =>
+                      navigate({
+                        to: "/admin/instructor/$accountId/$classId",
+                        params: { accountId, classId: c.id },
+                      })
+                    }
+                  >
+                    Assignments <ChevronRight className="ml-1 h-4 w-4" />
                   </Button>
                   <Button variant="ghost" size="icon" onClick={() => toggleActive(c)} title="Toggle"><Power className="h-4 w-4" /></Button>
                   <Button variant="ghost" size="icon" onClick={() => setToDelete(c)} title="Delete"><Trash2 className="h-4 w-4 text-destructive" /></Button>
