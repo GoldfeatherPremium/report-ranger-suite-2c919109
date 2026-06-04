@@ -1,40 +1,31 @@
 #!/usr/bin/env bash
-# Worker status & flow-settings inspector.
+# Worker status & flow-settings inspector for BOTH student and instructor workers.
 # Run from anywhere on the VPS: bash /root/report-ranger-suite/vps/status.sh
+#
+# Usage:
+#   bash status.sh              # show both workers
+#   bash status.sh --student    # student worker only
+#   bash status.sh --instructor # instructor worker only
 
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-ENV_FILE="$REPO_DIR/vps/worker/.env"
+WORKER_DIR="$REPO_DIR/vps/worker"
+INSTRUCTOR_DIR="$REPO_DIR/vps/worker-instructor"
+
+SHOW_STUDENT=1
+SHOW_INSTRUCTOR=1
+for arg in "$@"; do
+  case "$arg" in
+    --student)    SHOW_INSTRUCTOR=0 ;;
+    --instructor) SHOW_STUDENT=0 ;;
+  esac
+done
 
 RED='\033[0;31m'; YEL='\033[1;33m'; GRN='\033[0;32m'; CYN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
 hr()  { echo -e "${CYN}────────────────────────────────────────────────────────────────${NC}"; }
 hdr() { hr; echo -e "${BOLD}  $1${NC}"; hr; }
-
-# ── Load .env ─────────────────────────────────────────────────────────────────
-if [[ ! -f "$ENV_FILE" ]]; then
-  echo -e "${RED}ERROR: .env not found at $ENV_FILE${NC}"; exit 1
-fi
-# shellcheck disable=SC2046
-export $(grep -v '^\s*#' "$ENV_FILE" | grep -v '^\s*$' | xargs)
-
-# ── Safe defaults (mirror envNum() in index.ts) ───────────────────────────────
-SUBMISSION_TIMEOUT_MS=${SUBMISSION_TIMEOUT_MS:-900000}
-UPLOAD_TIMEOUT_MS=${UPLOAD_TIMEOUT_MS:-600000}
-POLL_INTERVAL_MS=${POLL_INTERVAL_MS:-30000}
-CLAIM_IDLE_MS=${CLAIM_IDLE_MS:-10000}
-HEARTBEAT_MS=${HEARTBEAT_MS:-30000}
-HEADLESS=${HEADLESS:-true}
-WORKER_ID=${WORKER_ID:-worker-unknown}
-
-# Validate numbers (catch blank-string bug)
-num_or_default() { local v; v=$(echo "$1" | tr -d '[:space:]'); [[ "$v" =~ ^[0-9]+$ && "$v" -gt 0 ]] && echo "$v" || echo "$2"; }
-SUBMISSION_TIMEOUT_MS=$(num_or_default "$SUBMISSION_TIMEOUT_MS" 900000)
-UPLOAD_TIMEOUT_MS=$(num_or_default     "$UPLOAD_TIMEOUT_MS"     600000)
-POLL_INTERVAL_MS=$(num_or_default      "$POLL_INTERVAL_MS"       30000)
-CLAIM_IDLE_MS=$(num_or_default         "$CLAIM_IDLE_MS"          10000)
-HEARTBEAT_MS=$(num_or_default          "$HEARTBEAT_MS"           30000)
 
 ms_to_human() {
   local ms=$1
@@ -44,53 +35,117 @@ ms_to_human() {
   fi
 }
 
-echo ""
-hdr "1. FLOW SETTINGS (.env → worker)"
+# ── helper: print settings from a .env file ──────────────────────────────────
+print_worker_settings() {
+  local env_file="$1"
+  local label="$2"
 
-echo -e "  Worker ID              : ${BOLD}$WORKER_ID${NC}"
-echo -e "  Headless browser       : ${BOLD}$HEADLESS${NC}"
-echo ""
-echo -e "  Submission timeout     : ${BOLD}$(ms_to_human $SUBMISSION_TIMEOUT_MS)${NC}  (wait for similarity %)"
-echo -e "  Upload timeout         : ${BOLD}$(ms_to_human $UPLOAD_TIMEOUT_MS)${NC}  (wait for 'Submit to Turnitin' button)"
-echo -e "  Poll interval          : ${BOLD}$(ms_to_human $POLL_INTERVAL_MS)${NC}  (how often to reload dashboard)"
-echo -e "  Claim idle sleep       : ${BOLD}$(ms_to_human $CLAIM_IDLE_MS)${NC}  (sleep when no job available)"
-echo -e "  Heartbeat interval     : ${BOLD}$(ms_to_human $HEARTBEAT_MS)${NC}"
-
-# Warn about blank values in .env
-echo ""
-for KEY in SUBMISSION_TIMEOUT_MS UPLOAD_TIMEOUT_MS POLL_INTERVAL_MS; do
-  RAW=$(grep -E "^${KEY}[[:space:]]*=" "$ENV_FILE" | cut -d= -f2 | tr -d '[:space:]' || true)
-  if [[ -z "$RAW" || "$RAW" == "0" ]]; then
-    echo -e "  ${RED}WARNING: $KEY is blank/zero in .env — using fallback${NC}"
+  if [[ ! -f "$env_file" ]]; then
+    echo -e "  ${RED}ERROR: .env not found at $env_file${NC}"
+    return 1
   fi
-done
 
-# ── Systemd service ───────────────────────────────────────────────────────────
-hdr "2. WORKER SERVICE STATUS"
-if systemctl is-active --quiet turnitin-worker 2>/dev/null; then
-  echo -e "  Status  : ${GRN}RUNNING${NC}"
-  systemctl status turnitin-worker --no-pager -l 2>/dev/null | grep -E "Active:|PID:|Memory:" | sed 's/^/  /'
-else
-  echo -e "  Status  : ${RED}NOT RUNNING${NC}"
-  echo -e "  Start   : systemctl start turnitin-worker"
+  # shellcheck disable=SC2046
+  export $(grep -v '^\s*#' "$env_file" | grep -v '^\s*$' | xargs)
+
+  local worker_id="${WORKER_ID:-unknown}"
+  local headless="${HEADLESS:-true}"
+  local sub_timeout="${SUBMISSION_TIMEOUT_MS:-900000}"
+  local upload_timeout="${UPLOAD_TIMEOUT_MS:-600000}"
+  local poll_interval="${POLL_INTERVAL_MS:-30000}"
+  local claim_idle="${CLAIM_IDLE_MS:-10000}"
+  local heartbeat="${HEARTBEAT_MS:-30000}"
+  local concurrency="${CONCURRENCY:-3}"
+
+  num_or_default() { local v; v=$(echo "$1" | tr -d '[:space:]'); [[ "$v" =~ ^[0-9]+$ && "$v" -gt 0 ]] && echo "$v" || echo "$2"; }
+  sub_timeout=$(num_or_default "$sub_timeout" 900000)
+  upload_timeout=$(num_or_default "$upload_timeout" 600000)
+  poll_interval=$(num_or_default "$poll_interval" 30000)
+  claim_idle=$(num_or_default "$claim_idle" 10000)
+  heartbeat=$(num_or_default "$heartbeat" 30000)
+
+  echo -e "  Worker ID              : ${BOLD}$worker_id${NC}"
+  echo -e "  Headless browser       : ${BOLD}$headless${NC}"
+  echo -e "  Concurrency            : ${BOLD}$concurrency${NC}"
+  echo ""
+  echo -e "  Submission timeout     : ${BOLD}$(ms_to_human $sub_timeout)${NC}"
+  echo -e "  Upload timeout         : ${BOLD}$(ms_to_human $upload_timeout)${NC}"
+  echo -e "  Poll interval          : ${BOLD}$(ms_to_human $poll_interval)${NC}"
+  echo -e "  Claim idle sleep       : ${BOLD}$(ms_to_human $claim_idle)${NC}"
+  echo -e "  Heartbeat interval     : ${BOLD}$(ms_to_human $heartbeat)${NC}"
+
+  for KEY in SUBMISSION_TIMEOUT_MS UPLOAD_TIMEOUT_MS POLL_INTERVAL_MS; do
+    RAW=$(grep -E "^${KEY}[[:space:]]*=" "$env_file" | cut -d= -f2 | tr -d '[:space:]' || true)
+    if [[ -z "$RAW" || "$RAW" == "0" ]]; then
+      echo -e "  ${RED}WARNING: $KEY is blank/zero in .env — using fallback${NC}"
+    fi
+  done
+}
+
+# ── helper: systemd status ───────────────────────────────────────────────────
+print_service_status() {
+  local svc="$1"
+  if systemctl is-active --quiet "$svc" 2>/dev/null; then
+    echo -e "  Status  : ${GRN}RUNNING${NC}"
+    systemctl status "$svc" --no-pager -l 2>/dev/null | grep -E "Active:|PID:|Memory:" | sed 's/^/  /'
+  else
+    echo -e "  Status  : ${RED}NOT RUNNING${NC}"
+    echo -e "  Start   : systemctl start $svc"
+  fi
+}
+
+# ── 1. Student worker ────────────────────────────────────────────────────────
+if [[ "$SHOW_STUDENT" -eq 1 ]]; then
+  echo ""
+  hdr "STUDENT WORKER (Similarity-only pipeline)"
+  print_worker_settings "$WORKER_DIR/.env" "student"
+  echo ""
+  hdr "STUDENT SERVICE STATUS"
+  print_service_status "turnitin-worker"
 fi
 
-# ── Git / build ───────────────────────────────────────────────────────────────
-hdr "3. CODE VERSION"
+# ── 2. Instructor worker ─────────────────────────────────────────────────────
+if [[ "$SHOW_INSTRUCTOR" -eq 1 ]]; then
+  echo ""
+  hdr "INSTRUCTOR WORKER (Similarity + AI pipeline)"
+  print_worker_settings "$INSTRUCTOR_DIR/.env" "instructor"
+  echo ""
+  hdr "INSTRUCTOR SERVICE STATUS"
+  print_service_status "turnitin-instructor-worker"
+fi
+
+# ── 3. Code version ──────────────────────────────────────────────────────────
+echo ""
+hdr "CODE VERSION"
 cd "$REPO_DIR"
 echo -e "  Branch  : $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
 echo -e "  Commit  : $(git rev-parse --short HEAD 2>/dev/null || echo '?')"
-echo -e "  Built   : $(stat -c '%y' "$REPO_DIR/vps/worker/dist/index.js" 2>/dev/null | cut -d. -f1 || echo 'not built')"
+
+if [[ "$SHOW_STUDENT" -eq 1 ]]; then
+  echo -e "  Student built   : $(stat -c '%y' "$WORKER_DIR/dist/index.js" 2>/dev/null | cut -d. -f1 || echo 'not built')"
+fi
+if [[ "$SHOW_INSTRUCTOR" -eq 1 ]]; then
+  echo -e "  Instructor built: $(stat -c '%y' "$INSTRUCTOR_DIR/dist/index.js" 2>/dev/null | cut -d. -f1 || echo 'not built')"
+fi
 
 REMOTE_SHA=$(git rev-parse "origin/$(git rev-parse --abbrev-ref HEAD)" 2>/dev/null || echo '')
 LOCAL_SHA=$(git rev-parse HEAD 2>/dev/null || echo '')
 if [[ -n "$REMOTE_SHA" && "$LOCAL_SHA" != "$REMOTE_SHA" ]]; then
-  echo -e "  ${YEL}Behind remote — run: git fetch origin && git reset --hard origin/$(git rev-parse --abbrev-ref HEAD)${NC}"
+  echo -e "  ${YEL}Behind remote — run: sudo bash $REPO_DIR/vps/update.sh${NC}"
 else
   echo -e "  Up to date with remote"
 fi
 
-# ── Query Supabase ─────────────────────────────────────────────────────────────
+# ── 4. Supabase checks ───────────────────────────────────────────────────────
+ENV_FILE="$WORKER_DIR/.env"
+if [[ ! -f "$ENV_FILE" ]]; then
+  echo -e "${YEL}Skipping DB checks — .env not found${NC}"
+  exit 0
+fi
+
+# shellcheck disable=SC2046
+export $(grep -v '^\s*#' "$ENV_FILE" | grep -v '^\s*$' | xargs)
+
 if [[ -z "${SUPABASE_URL:-}" || -z "${SUPABASE_SERVICE_ROLE_KEY:-}" ]]; then
   echo -e "${YEL}Skipping DB checks — SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set${NC}"
   exit 0
@@ -101,24 +156,26 @@ AUTH=(-H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABAS
 
 db_get() { curl -sf "${AUTH[@]}" -H "Accept: application/json" "$API/$1" 2>/dev/null || echo "[]"; }
 
-# ── Turnitin slots ─────────────────────────────────────────────────────────────
-hdr "4. TURNITIN SLOTS"
-SLOTS=$(db_get "turnitin_slots?select=id,label,submit_url,cooldown_hours,is_active&order=created_at")
-COUNT=$(echo "$SLOTS" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d))" 2>/dev/null || echo "?")
-echo -e "  Total slots: ${BOLD}$COUNT${NC}"
-echo "$SLOTS" | python3 -c "
+# ── Student slots ─────────────────────────────────────────────────────────────
+if [[ "$SHOW_STUDENT" -eq 1 ]]; then
+  echo ""
+  hdr "STUDENT SLOTS"
+  SLOTS=$(db_get "turnitin_slots?select=id,label,submit_url,cooldown_hours,is_active&order=created_at")
+  COUNT=$(echo "$SLOTS" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d))" 2>/dev/null || echo "?")
+  echo -e "  Total slots: ${BOLD}$COUNT${NC}"
+  echo "$SLOTS" | python3 -c "
 import sys, json
 slots = json.load(sys.stdin)
 for s in slots:
     active = '✓ active' if s.get('is_active') else '✗ disabled'
     url = (s.get('submit_url') or '—')[:60]
-    print(f\"  [{active}] {s['label']}  cooldown={s['cooldown_hours']}h  url={url}\")
+    print(f'  [{active}] {s[\"label\"]}  cooldown={s[\"cooldown_hours\"]}h  url={url}')
 " 2>/dev/null || echo "  (could not parse slots)"
 
-# ── Slot usage (in-use right now) ─────────────────────────────────────────────
-hdr "5. SLOT USAGE (currently in use)"
-USAGE=$(db_get "turnitin_slot_usage?select=slot_id,job_id,submitted_at,freed_at&freed_at=is.null&order=submitted_at.desc")
-echo "$USAGE" | python3 -c "
+  echo ""
+  hdr "STUDENT SLOT USAGE (currently in use)"
+  USAGE=$(db_get "turnitin_slot_usage?select=slot_id,job_id,submitted_at,freed_at&freed_at=is.null&order=submitted_at.desc")
+  echo "$USAGE" | python3 -c "
 import sys, json
 rows = json.load(sys.stdin)
 if not rows:
@@ -127,40 +184,75 @@ else:
     for r in rows:
         print(f\"  slot={r['slot_id'][:8]}...  job={r['job_id'][:8]}...  since={r['submitted_at'][:19]}\")
 " 2>/dev/null || echo "  (could not parse usage)"
+fi
 
-# ── Current jobs ──────────────────────────────────────────────────────────────
-hdr "6. CURRENT JOBS"
-JOBS=$(db_get "jobs?select=id,status,original_name,attempts,max_attempts,error,created_at,turnitin_submission_id&order=created_at.desc&limit=15")
+# ── Instructor assignments ───────────────────────────────────────────────────
+if [[ "$SHOW_INSTRUCTOR" -eq 1 ]]; then
+  echo ""
+  hdr "INSTRUCTOR ASSIGNMENTS"
+  ASSIGNMENTS=$(db_get "turnitin_instructor_assignments?select=id,label,submit_url,cooldown_hours,is_active,turnitin_instructor_classes(label,account_id)&order=created_at")
+  COUNT=$(echo "$ASSIGNMENTS" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d))" 2>/dev/null || echo "?")
+  echo -e "  Total assignments: ${BOLD}$COUNT${NC}"
+  echo "$ASSIGNMENTS" | python3 -c "
+import sys, json
+rows = json.load(sys.stdin)
+for r in rows:
+    active = '✓ active' if r.get('is_active') else '✗ disabled'
+    cls = r.get('turnitin_instructor_classes', {})
+    url = (r.get('submit_url') or '—')[:60]
+    print(f\"  [{active}] {r['label']}  class={cls.get('label','?')}  cooldown={r.get('cooldown_hours',24)}h  url={url}\")
+" 2>/dev/null || echo "  (could not parse assignments)"
+
+  echo ""
+  hdr "INSTRUCTOR SLOT USAGE (currently in use)"
+  USAGE=$(db_get "turnitin_instructor_slot_usage?select=assignment_id,job_id,submitted_at,freed_at&freed_at=is.null&order=submitted_at.desc")
+  echo "$USAGE" | python3 -c "
+import sys, json
+rows = json.load(sys.stdin)
+if not rows:
+    print('  All assignments are free')
+else:
+    for r in rows:
+        print(f\"  assignment={r['assignment_id'][:8]}...  job={r['job_id'][:8]}...  since={r['submitted_at'][:19]}\")
+" 2>/dev/null || echo "  (could not parse usage)"
+fi
+
+# ── Jobs (both pipelines) ─────────────────────────────────────────────────────
+echo ""
+hdr "RECENT JOBS (both pipelines)"
+JOBS=$(db_get "jobs?select=id,status,original_name,pipeline,attempts,max_attempts,error,created_at,turnitin_submission_id,ai_report_status&order=created_at.desc&limit=20")
 echo "$JOBS" | python3 -c "
 import sys, json
 jobs = json.load(sys.stdin)
 if not jobs:
     print('  No jobs found')
     sys.exit()
-# count by status
 from collections import Counter
-counts = Counter(j['status'] for j in jobs)
-print('  Status summary (last 15):')
-for s, n in sorted(counts.items()):
-    print(f'    {s}: {n}')
+counts = Counter((j['pipeline'], j['status']) for j in jobs)
+print('  Status summary (last 20):')
+for (pl, st), n in sorted(counts.items()):
+    print(f'    [{pl}] {st}: {n}')
 print()
 print('  Recent jobs:')
-for j in jobs[:10]:
+for j in jobs[:15]:
     name = (j.get('original_name') or '?')[:30]
+    pl   = j.get('pipeline','?')
+    ai   = f\"  ai={j.get('ai_report_status','?')}\" if pl == 'instructor' else ''
     err  = ('  ERR: ' + j['error'][:50]) if j.get('error') else ''
     sub  = '  [submitted]' if j.get('turnitin_submission_id') else ''
-    print(f\"  {j['status']:12}  {j['attempts']}/{j['max_attempts']} att  {name}{sub}{err}\")
+    print(f\"  [{pl:10}] {j['status']:12}  {j['attempts']}/{j['max_attempts']} att  {name}{sub}{ai}{err}\")
 " 2>/dev/null || echo "  (could not parse jobs)"
 
-# ── Worker health ─────────────────────────────────────────────────────────────
-hdr "7. WORKER HEALTH (DB heartbeat)"
+# ── Worker health ────────────────────────────────────────────────────────────
+echo ""
+hdr "WORKER HEALTH (DB heartbeat)"
 HEALTH=$(db_get "worker_health?select=worker_id,last_seen,active_jobs,status")
 echo "$HEALTH" | python3 -c "
 import sys, json
 from datetime import datetime, timezone
 rows = json.load(sys.stdin)
 if not rows:
-    print('  No heartbeat recorded — worker may not have started yet')
+    print('  No heartbeat recorded — workers may not have started yet')
     sys.exit()
 for r in rows:
     try:
@@ -173,22 +265,25 @@ for r in rows:
     print(f\"  worker={r['worker_id']}  status={r['status']}  active_jobs={r['active_jobs']}  last_seen={age_str}{stale}\")
 " 2>/dev/null || echo "  (could not parse health)"
 
-# ── Last 5 worker log lines ───────────────────────────────────────────────────
-hdr "8. LAST 5 WORKER LOG LINES (from DB)"
-LOGS=$(db_get "worker_logs?select=created_at,level,message&order=created_at.desc&limit=5")
+# ── Last 10 worker log lines ─────────────────────────────────────────────────
+echo ""
+hdr "LAST 10 WORKER LOG LINES (from DB)"
+LOGS=$(db_get "worker_logs?select=created_at,worker_id,level,message&order=created_at.desc&limit=10")
 echo "$LOGS" | python3 -c "
 import sys, json
 rows = json.load(sys.stdin)
 for r in reversed(rows):
     ts  = r['created_at'][11:19]
+    wid = r.get('worker_id','?')[:20]
     lvl = r['level'].upper()[:5]
     msg = (r.get('message') or '')[:100]
-    print(f'  [{ts}] [{lvl}] {msg}')
+    print(f'  [{ts}] [{wid}] [{lvl}] {msg}')
 " 2>/dev/null || echo "  (could not fetch logs)"
 
 hr
 echo ""
 echo -e "  Full live logs  : ${BOLD}journalctl -u turnitin-worker -f${NC}"
-echo -e "  Restart worker  : ${BOLD}systemctl restart turnitin-worker${NC}"
-echo -e "  Pull latest code: ${BOLD}cd $REPO_DIR && git fetch origin && git reset --hard origin/\$(git rev-parse --abbrev-ref HEAD)${NC}"
+echo -e "                   ${BOLD}journalctl -u turnitin-instructor-worker -f${NC}"
+echo -e "  Restart workers : ${BOLD}systemctl restart turnitin-worker turnitin-instructor-worker${NC}"
+echo -e "  Update code     : ${BOLD}sudo bash $REPO_DIR/vps/update.sh${NC}"
 echo ""
