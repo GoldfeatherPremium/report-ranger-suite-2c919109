@@ -823,7 +823,7 @@ async function extractSubmissionIdFromPage(page: Page): Promise<string | null> {
   return null;
 }
 
-async function waitForSimilarity(page: Page, timeoutMs: number, pollMs: number, onProgress: (m: string) => Promise<void>): Promise<string | null> {
+async function waitForSimilarity(page: Page, timeoutMs: number, pollMs: number, onProgress: (m: string) => Promise<void>): Promise<{ submissionId: string | null; similarityPercent: number | null }> {
   const deadline = Date.now() + timeoutMs;
   let submissionId: string | null = null;
 
@@ -840,9 +840,11 @@ async function waitForSimilarity(page: Page, timeoutMs: number, pollMs: number, 
 
     // Look for a percentage on the similarity cell
     const text = await page.locator(SEL.similarityCell).first().innerText({ timeout: 5_000 }).catch(() => "");
-    if (/\d+\s*%/.test(text)) {
-      await onProgress(`similarity ready: ${text.trim()}`);
-      return submissionId;
+    const pctMatch = text.match(/(\d+(?:\.\d+)?)\s*%/);
+    if (pctMatch) {
+      const similarityPercent = Number(pctMatch[1]);
+      await onProgress(`similarity ready: ${text.trim()} (parsed=${similarityPercent}%)`);
+      return { submissionId, similarityPercent: Number.isFinite(similarityPercent) ? similarityPercent : null };
     }
 
     await onProgress(`not ready yet, sleeping ${Math.round(pollMs / 1000)}s`);
