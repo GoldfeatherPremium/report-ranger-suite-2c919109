@@ -124,11 +124,14 @@ const SEL = {
   ].join(", "),
 
   // ── Resubmit-related (used rows) ──────────────────────────────────────────────
+  // The used-row ⋮ dropdown shows "Resubmit file" (not just "Resubmit").
+  // Clicking it opens a "Resubmit file" dialog → Confirm → same upload flow.
   resubmitMenuItem: [
-    'a:has-text("Resubmit")',
-    'button:has-text("Resubmit")',
-    'li:has-text("Resubmit")',
-    '[role="menuitem"]:has-text("Resubmit")',
+    'a:has-text("Resubmit file")',
+    'button:has-text("Resubmit file")',
+    'li:has-text("Resubmit file")',
+    '[role="menuitem"]:has-text("Resubmit file")',
+    'span:has-text("Resubmit file")',
   ].join(", "),
   confirmResubmission: [
     'button:has-text("Confirm")',
@@ -425,23 +428,24 @@ export async function submitToTurnitin(opts: {
                 "the Submit file menu item in the dropdown", onProgress, 5_000);
               submitFileOpened = true;
             } else if (hasResubmit) {
-              await onProgress("step1: this row has existing submission — checking if resubmit is allowed");
+              await onProgress("step1: this row has existing submission — clicking 'Resubmit file'");
               if (await isResubmitDenied(page, onProgress)) {
                 await onProgress("step1: resubmit denied on this row — trying next");
                 await page.keyboard.press("Escape");
                 await page.waitForTimeout(400);
               } else {
-                await onProgress("step1: resubmit allowed on this row — proceeding");
                 await smartClick(page, SEL.resubmitMenuItem,
-                  "the Resubmit menu item in the dropdown", onProgress, 5_000);
+                  "the 'Resubmit file' menu item in the dropdown (used-row resubmit option)", onProgress, 5_000);
                 await page.waitForTimeout(600);
+                // "Resubmit file" dialog: "Resubmit on behalf of [student name]" → Confirm
+                await onProgress("step1: 'Resubmit file' dialog — clicking Confirm");
                 await smartClick(page, SEL.confirmResubmission,
-                  "the Confirm button in the Confirm Resubmission dialog", onProgress, 10_000);
-                await page.waitForTimeout(800);
+                  "the Confirm button in the 'Resubmit file' confirmation dialog", onProgress, 10_000);
+                await page.waitForTimeout(1_000);
                 if (await isResubmitDenied(page, onProgress)) {
                   throw new ResubmitDeniedError(assignment.assignment_label);
                 }
-                // Treat as if "Submit file" was opened since resubmit shows the same dialog
+                // After Confirm, the same "Submit file" upload dialog opens — continue
                 submitFileOpened = true;
               }
             } else {
