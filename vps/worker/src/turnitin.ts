@@ -643,13 +643,13 @@ export async function submitToTurnitin(opts: {
 
     // ── Step 7: wait for the similarity score on the dashboard ─────────────────
     await onProgress("waiting for similarity score");
-    const submissionId = await waitForSimilarity(page, submissionTimeoutMs, pollIntervalMs, onProgress);
+    const { submissionId, similarityPercent } = await waitForSimilarity(page, submissionTimeoutMs, pollIntervalMs, onProgress);
 
     // ── Step 8: open viewer and download the PDF ───────────────────────────────
     await onProgress("downloading similarity PDF");
     const pdf = await downloadSimilarityPdf(page, onProgress);
 
-    return { pdf, submissionId };
+    return { pdf, submissionId, similarityPercent };
   } finally {
     await browser?.close().catch(() => {});
     await rm(tmp, { recursive: true, force: true }).catch(() => {});
