@@ -17,147 +17,174 @@ export class ResubmitDeniedError extends Error {
 
 // Per-account Playwright storageState cache. Keyed by account_id so all
 // assignments belonging to the same Turnitin account share one session.
-// Lost on worker restart; a fresh login is acceptable since sessions last weeks.
 type StorageStateObj = Awaited<ReturnType<import("playwright").BrowserContext["storageState"]>>;
 const sessionCache = new Map<string, StorageStateObj>();
 
-// ── Selectors — adjust here if Turnitin UI shifts ────────────────────────────
-// These match the instructor (class-owner) view of Turnitin. Many selectors are
-// identical to the student worker; where the instructor UI differs the selector
-// is noted.
+// ── Selectors ─────────────────────────────────────────────────────────────────
+// Instructor (class-owner) view of Turnitin. The submit flow differs
+// significantly from the student flow:
+//   1. Assignment page shows a student-row table
+//   2. Each empty row has a ⋮ "More" button → "Submit file" dropdown item
+//   3. "Upload and Preview" (not "Upload and Review")
+//   4. "Submit" button on the "Submit without preview" screen (not "Submit to Turnitin")
+//   5. Viewer download uses a top-right "Download" text button with a popup menu
 const SEL = {
-  // ── Login page ──────────────────────────────────────────────────────────────
+  // ── Login ─────────────────────────────────────────────────────────────────────
   emailInput: 'input[name="email"], input#email, input[type="email"], input[name="user_email"], input[autocomplete="username"]',
   passwordInput: 'input[name="password"], input[name="user_password"], input#password, input#user_password, input[type="password"]',
   loginButton: 'button[type="submit"], input[type="submit"], button:has-text("Log in"), input[value="Log in"], input[value="Login"], #login',
 
-  // ── Assignment dashboard — opens the Submit File modal ───────────────────────
-  // Instructor view uses the same "Upload Submission" button for a single
-  // anonymous/student submission submitted on behalf of a student.
-  uploadSubmissionButton: [
-    'button:has-text("Upload Submission")',
-    'a:has-text("Upload Submission")',
-    'input[value="Upload Submission"]',
+  // ── Assignment page: ⋮ button in the "More" column ────────────────────────────
+  // Each student row has a three-dot button; clicking it reveals "Submit file"
+  // (empty row) or "Resubmit" (used row) in the dropdown.
+  moreDotsButton: [
+    '[aria-label="More"]',
+    '[aria-label*="more options" i]',
+    '[aria-label*="more actions" i]',
+    'button[title*="more" i]',
+    '[data-testid*="more-actions" i]',
+    '[data-testid*="more-options" i]',
+    'button.p-menu-toggle',
+    'button.more-actions',
+    'i.p-menuitem-icon',
   ].join(", "),
 
-  // ── Submit File modal ─────────────────────────────────────────────────────────
+  // ── "Submit file" item in the ⋮ dropdown ──────────────────────────────────────
+  submitFileMenuItem: [
+    'a:has-text("Submit file")',
+    'button:has-text("Submit file")',
+    'li:has-text("Submit file")',
+    '[role="menuitem"]:has-text("Submit file")',
+    'span:has-text("Submit file")',
+  ].join(", "),
+
+  // ── Submit File dialog: file area and Browse Files button ─────────────────────
   fileInput: 'input[type="file"]',
+  browseFilesButton: [
+    'button:has-text("Browse Files")',
+    'button:has-text("Browse")',
+  ].join(", "),
+  // "Your device" option in the Browse Files dropdown
+  yourDeviceOption: [
+    'a:has-text("Your device")',
+    'button:has-text("Your device")',
+    'li:has-text("Your device")',
+    '[role="menuitem"]:has-text("Your device")',
+  ].join(", "),
+
+  // ── Submit File dialog: title and upload button ───────────────────────────────
   submissionTitleInput: [
     'input[name="title"]',
     'input#submission_title',
-    'input[placeholder="Untitled" i]',
+    'input[placeholder*="title" i]',
     'input[aria-label*="title" i]',
     'input[name*="title" i]',
-  ].join(", "),
-  uploadAndReviewButton: [
-    'button:has-text("Upload and Review")',
-    'input[value="Upload and Review"]',
-    'a:has-text("Upload and Review")',
+    'input[placeholder="File name"]',
+    'input[placeholder*="name" i]',
   ].join(", "),
 
-  // ── Review screen ─────────────────────────────────────────────────────────────
+  // "Upload and Preview" — the instructor dialog uses this label (not "Upload and Review")
+  uploadAndPreviewButton: [
+    'button:has-text("Upload and Preview")',
+    'input[value="Upload and Preview"]',
+    'button:has-text("Upload and review")',
+    'input[value="Upload and review"]',
+  ].join(", "),
+
+  // ── "Submit without preview" screen: blue Submit button ──────────────────────
+  submitButton: [
+    'button:has-text("Submit")',
+    'input[value="Submit"]',
+  ].join(", "),
+
+  // ── "Submit to Turnitin" (alternative path if preview loads) ─────────────────
   submitToTurnitinButton: [
     'button:has-text("Submit to Turnitin")',
     'input[value="Submit to Turnitin"]',
     'a:has-text("Submit to Turnitin")',
   ].join(", "),
 
-  // ── Slow-preview confirmation screen ──────────────────────────────────────────
+  // ── Slow-preview confirmation ─────────────────────────────────────────────────
   slowPreviewText: 'text=click confirm to complete your upload',
   confirmSlowPreview: [
     'button:has-text("Confirm")',
     'input[value="Confirm"]',
   ].join(", "),
 
-  // ── Submission Complete modal — close it ──────────────────────────────────────
-  closeModalButton: [
+  // ── Close success/processing toasts or modals ─────────────────────────────────
+  closeToastButton: [
     'button[aria-label="Close" i]',
     'button[title="Close" i]',
+    '.p-toast-icon-close',
+    'button.close',
     '[data-dismiss="modal"]',
-    '.modal button.close',
     'button:has-text("×")',
+    '.toast-close',
+    '.notification-close',
   ].join(", "),
 
-  // ── Resubmit button (used assignment — dashboard already has a previous paper) ─
-  resubmitButton: [
-    'input[value="Resubmit"]',
-    'input[value*="resubmit" i]',
-    'input[name*="resubmit" i]',
-    'input[title*="resubmit" i]',
-    'input[alt*="resubmit" i]',
-    'a[href*="resubmit"]',
-    'a[title*="resubmit" i]',
-    'a:has(img[alt*="resubmit" i])',
-    'a:has(img[title*="resubmit" i])',
+  // ── Resubmit-related (used rows) ──────────────────────────────────────────────
+  resubmitMenuItem: [
+    'a:has-text("Resubmit")',
     'button:has-text("Resubmit")',
-    '[class*="resubmit"]',
+    'li:has-text("Resubmit")',
+    '[role="menuitem"]:has-text("Resubmit")',
   ].join(", "),
-
-  // ── Confirm Resubmission dialog ───────────────────────────────────────────────
   confirmResubmission: [
     'button:has-text("Confirm")',
     'input[value="Confirm"]',
     'a:has-text("Confirm")',
   ].join(", "),
-
-  // ── Resubmit-denied indicators ────────────────────────────────────────────────
   resubmitDenied: [
     '[class*="resubmit"][disabled]',
     '[class*="resubmit"][aria-disabled="true"]',
     'button[disabled][class*="resubmit"]',
     'input[disabled][value*="Resubmit" i]',
-    'a[class*="resubmit"][aria-disabled="true"]',
-    '[class*="resubmit"].disabled',
   ].join(", "),
 
-  // ── Similarity score link on the dashboard ────────────────────────────────────
+  // ── Similarity score in the submission list ───────────────────────────────────
+  // The score appears as a coloured badge (e.g. "11%") that is clickable and
+  // opens the viewer at reports-ap.integrity.turnitin.com
   similarityCell: [
+    'a[href*="submission-viewer"]',
+    'a[href*="reports-ap"]',
+    'a[href*="ev.turnitin"]',
     '.or-link',
     '[data-similarity]',
     '.similarity-score',
-    'a[href*="viewer"]',
-    'a[href*="ev.turnitin"]',
     'a:has-text("%")',
     'div[class*="similarity" i]',
+    'span[class*="similarity" i]',
   ].join(", "),
 
-  // ── Viewer download button ───────────────────────────────────────────────────
-  downloadButton: [
-    '[class*="tii-icon-download"]',
-    '[class*="sidebar-download-button"]',
-    '[class*="sidebar-download" i]',
-    '[title="Download"]',
-    '[title="Download" i]',
+  // ── Viewer: "Download" text button (top right of the viewer page) ─────────────
+  // This is a text button, NOT a sidebar icon. It opens a popup menu with report types.
+  viewerDownloadButton: [
+    'button:has-text("Download")',
+    'a:has-text("Download")',
+    '[data-testid="download-button"]',
+    '[data-testid*="download" i]',
     '[aria-label="Download"]',
     '[aria-label*="download" i]',
-    'button[data-testid*="download" i]',
-    'button[class*="download" i]',
   ].join(", "),
 
-  // ── Download popup — "Current View" option ───────────────────────────────────
-  currentViewOption: [
-    'button:has-text("Current View")',
-    'a:has-text("Current View")',
-    'li:has-text("Current View")',
-    'span:has-text("Current View")',
-    '[data-testid*="current-view" i]',
+  // ── Viewer download menu: report type options ─────────────────────────────────
+  downloadSimilarityReport: [
+    'button:has-text("Similarity Report")',
+    'a:has-text("Similarity Report")',
+    'li:has-text("Similarity Report")',
+    '[role="menuitem"]:has-text("Similarity Report")',
+    'span:has-text("Similarity Report")',
   ].join(", "),
-
-  // ── AI Writing tab in the Turnitin viewer ────────────────────────────────────
-  // TODO: capture exact selector with HEADLESS=false + [diag] logging on a live
-  // instructor account, then replace these stubs. The AI fallback resolver will
-  // attempt to find the tab even without a hardcoded selector.
-  aiWritingTab: [
-    '[data-testid*="ai-writing" i]',
-    'button:has-text("AI Writing")',
-    'a:has-text("AI Writing")',
-    '[aria-label*="AI Writing" i]',
-    '[class*="ai-writing" i]',
-    '[class*="aiWriting" i]',
+  downloadAiWritingReport: [
+    'button:has-text("AI Writing Report")',
+    'a:has-text("AI Writing Report")',
+    'li:has-text("AI Writing Report")',
+    '[role="menuitem"]:has-text("AI Writing Report")',
+    'span:has-text("AI Writing Report")',
   ].join(", "),
 };
 
-// Turnitin message patterns when resubmission is refused.
 const RESUBMIT_DENIED_TEXTS: RegExp[] = [
   /cannot resubmit/i,
   /resubmission is not allowed/i,
@@ -226,43 +253,6 @@ async function isResubmitDenied(page: Page, onProgress: Logger): Promise<boolean
   return false;
 }
 
-const STEP_INTENTS: Record<number, { intent?: string; textWait?: string }> = {
-  4: { intent: "the Upload and Review button to proceed to the submission review screen" },
-  5: { intent: "the Submit to Turnitin button or Confirm button to complete the upload and submit it" },
-  6: { textWait: "Submission Complete" },
-  7: { textWait: "%" },
-};
-
-async function runStepRecovery(page: Page, failedStep: number, onProgress: Logger): Promise<boolean> {
-  await onProgress(`[recovery] step${failedStep} failed — AI recovery on steps ${failedStep - 1}–${failedStep + 1}`);
-  for (const s of [failedStep - 1, failedStep, failedStep + 1]) {
-    const info = STEP_INTENTS[s];
-    if (!info) continue;
-    if (info.textWait) {
-      const found = await waitForTextInAnyFrame(page, info.textWait, 30_000);
-      if (found) {
-        await onProgress(`[recovery] step${s}: "${info.textWait}" found — recovered`);
-        return true;
-      }
-    } else if (info.intent) {
-      await dumpPageControls(page, onProgress);
-      const ai = await findElementWithAI(page, info.intent);
-      if (ai) {
-        const clicked = await tryClickInAnyFrame(page, ai.selector, 5_000);
-        await onProgress(`[recovery] step${s}: AI click "${ai.selector}" — ${clicked ? "ok" : "miss"}`);
-        if (clicked && s >= failedStep) {
-          const complete = await waitForTextInAnyFrame(page, "Submission Complete", 90_000);
-          if (complete) {
-            await onProgress("[recovery] Submission Complete detected after AI click — recovered");
-            return true;
-          }
-        }
-      }
-    }
-  }
-  return false;
-}
-
 export type InstructorSubmissionResult = {
   similarityPdf: Buffer;
   aiPdf: Buffer | null;
@@ -311,11 +301,11 @@ export async function submitToTurnitin(opts: {
 
     if (usedCachedSession) {
       const targetUrl = assignment.submit_url ?? assignment.login_url;
-      await onProgress(`cached session found for account ${assignment.account_label} — navigating directly to ${targetUrl}`);
+      await onProgress(`cached session found for account ${assignment.account_label} — navigating to ${targetUrl}`);
       await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
       await page.waitForLoadState("load", { timeout: 60_000 }).catch(() => {});
       if (await locateInAnyFrame(page, SEL.emailInput)) {
-        await onProgress(`cached session expired for account ${assignment.account_label} — clearing cache, re-logging in`);
+        await onProgress(`cached session expired for account ${assignment.account_label} — re-logging in`);
         sessionCache.delete(assignment.account_id);
         usedCachedSession = false;
       } else {
@@ -327,240 +317,280 @@ export async function submitToTurnitin(opts: {
       await onProgress(`opening login: ${assignment.login_url}`);
       await page.goto(assignment.login_url, { waitUntil: "domcontentloaded", timeout: 60_000 });
       await page.waitForLoadState("load", { timeout: 60_000 }).catch(() => {});
-      await onProgress(`login page loaded: url=${page.url()} title=${await page.title().catch(() => "?")}`);
+      await onProgress(`login page: url=${page.url()} title=${await page.title().catch(() => "?")}`);
 
       const emailOk = await smartFill(page, SEL.emailInput, assignment.email,
-        "the email or username input field on the Turnitin login page", onProgress, 30_000);
+        "the email or username input on the Turnitin login page", onProgress, 30_000);
       if (!emailOk) {
         await dumpPageControls(page, onProgress);
-        throw new Error(
-          "Could not find the Turnitin email field. The [diag] lines above list every input/button on the page.",
-        );
+        throw new Error("Could not find Turnitin email field — see [diag] lines above.");
       }
       const passwordOk = await smartFill(page, SEL.passwordInput, assignment.password,
-        "the password input field on the Turnitin login page", onProgress, 15_000);
+        "the password input on the Turnitin login page", onProgress, 15_000);
       if (!passwordOk) {
         await dumpPageControls(page, onProgress);
-        throw new Error("Found the email field but not the password field — see [diag] lines above.");
+        throw new Error("Found email field but not password field — see [diag] lines above.");
       }
 
       await Promise.all([
         page.waitForLoadState("networkidle", { timeout: 60_000 }).catch(() => {}),
-        smartClick(page, SEL.loginButton, "the Log in / Sign in submit button on the login page",
+        smartClick(page, SEL.loginButton, "the Log in submit button on the login page",
           onProgress, 15_000).catch(() => page.keyboard.press("Enter")),
       ]);
-      await onProgress(`after login submit: url=${page.url()} title=${await page.title().catch(() => "?")}`);
+      await onProgress(`after login: url=${page.url()}`);
 
       if (await locateInAnyFrame(page, SEL.emailInput)) {
         const diagLines = await dumpPageControls(page, onProgress);
         const pageState = await aiDetectPageState(
           diagLines, page.url(), await page.title().catch(() => ""), onProgress,
         );
-        if (pageState === "captcha") {
-          throw new Error("Login blocked by CAPTCHA — manual intervention required (see [diag] lines).");
-        }
-        throw new Error("Still on a login form after submitting — login likely failed (check credentials/captcha; see [diag] lines).");
+        if (pageState === "captcha") throw new Error("Login blocked by CAPTCHA — manual intervention required.");
+        throw new Error("Still on login form after submitting — check credentials (see [diag] lines).");
       }
       await onProgress("logged in");
 
-      const state = await ctx.storageState();
-      sessionCache.set(assignment.account_id, state);
-      await onProgress(`session saved to cache for account ${assignment.account_label}`);
+      sessionCache.set(assignment.account_id, await ctx.storageState());
+      await onProgress(`session cached for account ${assignment.account_label}`);
 
       if (assignment.submit_url) {
-        await onProgress(`opening assignment dashboard: ${assignment.submit_url}`);
+        await onProgress(`navigating to assignment: ${assignment.submit_url}`);
         await page.goto(assignment.submit_url, { waitUntil: "domcontentloaded", timeout: 60_000 });
         await page.waitForLoadState("load", { timeout: 60_000 }).catch(() => {});
-      } else {
-        await onProgress("WARNING: assignment has no submit_url; staying on the post-login page");
       }
     }
 
-    // ── RESUME PATH: document already submitted in a prior attempt ─────────────
+    // ── RESUME PATH ────────────────────────────────────────────────────────────
     if (existingSubmissionId) {
       await onProgress(`resuming score-wait (already submitted, id=${existingSubmissionId})`);
-      const submissionId = await waitForSimilarity(page, submissionTimeoutMs, pollIntervalMs, onProgress);
-      const similarityPdf = await downloadSimilarityPdf(page, onProgress);
-      const aiPdf = await downloadAiPdf(page, onProgress);
+      const submissionId = await waitForSimilarity(page, originalName, submissionTimeoutMs, pollIntervalMs, onProgress);
+      const { similarityPdf, aiPdf } = await downloadBothReports(page, onProgress);
       return { similarityPdf, aiPdf, submissionId: submissionId ?? existingSubmissionId };
     }
 
-    // ── Step 1: decide path ────────────────────────────────────────────────────
-    await onProgress("step1: checking page — looking for existing document or upload button");
+    // ── Step 1: find an empty student row and open "Submit file" ───────────────
+    // The assignment page shows multiple student rows in a table. Each row has a
+    // ⋮ button in the "More" column. For empty rows the dropdown shows "Submit file".
+    // For already-used rows it shows "Resubmit". We look for any available row.
+    await onProgress("step1: looking for empty student row (⋮ → Submit file)");
+    let submitFileOpened = false;
     {
-      const step1Deadline = Date.now() + 60_000;
-      let step1Done = false;
-      while (Date.now() < step1Deadline && !step1Done) {
-        const hasResubmit = (await locateInAnyFrame(page, SEL.resubmitButton)) !== null;
-        const hasUpload   = (await locateInAnyFrame(page, SEL.uploadSubmissionButton)) !== null;
+      const step1Deadline = Date.now() + 90_000;
+      while (Date.now() < step1Deadline && !submitFileOpened) {
+        // Dump controls so we can see the page structure on failure
+        const allDots = await page.locator(SEL.moreDotsButton).all().catch(() => [] as Locator[]);
 
-        if (hasResubmit) {
-          await onProgress("step1: existing document detected — checking if resubmit is allowed");
-          if (await isResubmitDenied(page, onProgress)) {
-            throw new ResubmitDeniedError(assignment.assignment_label);
+        if (allDots.length === 0) {
+          // Try AI fallback to find the more button
+          const ai = await findElementWithAI(page, "the three-dot or kebab menu button (⋮) in the More column of the student submission table row");
+          if (!ai) {
+            await page.waitForTimeout(1_500);
+            continue;
           }
-          await onProgress("step1: resubmit allowed — proceeding");
-          await smartClick(page, SEL.resubmitButton,
-            "the resubmit or re-upload icon button for the existing paper submission", onProgress, 10_000);
-          await onProgress("step1b: confirming resubmission dialog");
-          await smartClick(page, SEL.confirmResubmission,
-            "the Confirm button in the Confirm Resubmission dialog", onProgress, 15_000);
-          await page.waitForTimeout(1_500);
-          if (await isResubmitDenied(page, onProgress)) {
-            throw new ResubmitDeniedError(assignment.assignment_label);
+          await onProgress(`[warn] [ai-fallback] found ⋮ button via AI: ${ai.selector}`);
+          // Try clicking it
+          const clicked = await tryClickInAnyFrame(page, ai.selector, 5_000);
+          if (!clicked) { await page.waitForTimeout(1_500); continue; }
+          await page.waitForTimeout(800);
+          const hasSubmitFile = (await locateInAnyFrame(page, SEL.submitFileMenuItem)) !== null;
+          if (hasSubmitFile) {
+            await smartClick(page, SEL.submitFileMenuItem,
+              "the Submit file menu item in the dropdown", onProgress, 5_000);
+            submitFileOpened = true;
+          } else {
+            // Close by pressing Escape
+            await page.keyboard.press("Escape");
           }
-          step1Done = true;
-        } else if (hasUpload) {
-          await onProgress("step1: no existing document — fresh upload flow");
-          await smartClick(page, SEL.uploadSubmissionButton,
-            "the blue Upload Submission button to open the file upload modal", onProgress, 10_000);
-          step1Done = true;
-        } else {
-          await page.waitForTimeout(500);
+          continue;
         }
+
+        // Try each ⋮ button until we find one that opens "Submit file"
+        for (const dotBtn of allDots) {
+          if (submitFileOpened) break;
+          try {
+            const box = await dotBtn.boundingBox().catch(() => null);
+            if (!box) continue;
+            const cx = Math.round(box.x + box.width / 2);
+            const cy = Math.round(box.y + box.height / 2);
+            await page.mouse.move(cx, cy);
+            await page.waitForTimeout(200);
+            await page.mouse.click(cx, cy);
+            await page.waitForTimeout(800);
+
+            const hasSubmitFile = (await locateInAnyFrame(page, SEL.submitFileMenuItem)) !== null;
+            const hasResubmit   = (await locateInAnyFrame(page, SEL.resubmitMenuItem))   !== null;
+
+            if (hasSubmitFile) {
+              await onProgress("step1: found empty row — clicking 'Submit file'");
+              await smartClick(page, SEL.submitFileMenuItem,
+                "the Submit file menu item in the dropdown", onProgress, 5_000);
+              submitFileOpened = true;
+            } else if (hasResubmit) {
+              await onProgress("step1: this row has existing submission — checking if resubmit is allowed");
+              if (await isResubmitDenied(page, onProgress)) {
+                await onProgress("step1: resubmit denied on this row — trying next");
+                await page.keyboard.press("Escape");
+                await page.waitForTimeout(400);
+              } else {
+                await onProgress("step1: resubmit allowed on this row — proceeding");
+                await smartClick(page, SEL.resubmitMenuItem,
+                  "the Resubmit menu item in the dropdown", onProgress, 5_000);
+                await page.waitForTimeout(600);
+                await smartClick(page, SEL.confirmResubmission,
+                  "the Confirm button in the Confirm Resubmission dialog", onProgress, 10_000);
+                await page.waitForTimeout(800);
+                if (await isResubmitDenied(page, onProgress)) {
+                  throw new ResubmitDeniedError(assignment.assignment_label);
+                }
+                // Treat as if "Submit file" was opened since resubmit shows the same dialog
+                submitFileOpened = true;
+              }
+            } else {
+              // Dropdown opened but neither option found — close and try next
+              await page.keyboard.press("Escape");
+              await page.waitForTimeout(300);
+            }
+          } catch { /* try next row */ }
+        }
+
+        if (!submitFileOpened) await page.waitForTimeout(1_000);
       }
-      if (!step1Done) {
+
+      if (!submitFileOpened) {
+        await dumpPageControls(page, onProgress);
         const diagLines = await dumpPageControls(page, onProgress);
         const pageState = await aiDetectPageState(
           diagLines, page.url(), await page.title().catch(() => ""), onProgress,
         );
-        if (pageState === "captcha") throw new Error("CAPTCHA detected on dashboard — manual intervention required.");
+        if (pageState === "captcha") throw new Error("CAPTCHA detected — manual intervention required.");
         if (pageState === "login") throw new Error("Ended up back on the login page — session may have expired.");
-        let aiHit = false;
-        for (const [aiIntent, label] of [
-          ["the resubmit or re-upload icon button for an existing paper submission", "resubmit"],
-          ["the blue Upload Submission button to open the file upload modal", "upload"],
-        ] as const) {
-          const ai = await findElementWithAI(page, aiIntent);
-          if (ai && await tryClickInAnyFrame(page, ai.selector, 5_000)) {
-            await onProgress(`[warn] [ai-fallback] intent="${label} button" used selector=${ai.selector} — update SEL`);
-            aiHit = true;
-            break;
-          }
-        }
-        if (!aiHit) {
-          throw new Error(
-            "Could not find resubmit button or 'Upload Submission' button on the dashboard. " +
-            "Check that the assignment's submit_url is the assignment dashboard URL. See [diag] lines.",
-          );
-        }
-        await onProgress("step1: AI-resolved button clicked — continuing");
+        throw new Error(
+          "Could not find any empty student row on the assignment page. " +
+          "All rows may be in cooldown or the submit_url may be wrong. See [diag] lines.",
+        );
       }
     }
 
-    // ── Step 2: attach the file ────────────────────────────────────────────────
+    // ── Step 2: attach file ────────────────────────────────────────────────────
     await onProgress("step2: attaching file to the Submit File dialog");
-    if (!(await setFileInAnyFrame(page, SEL.fileInput, filePath, 30_000))) {
-      await dumpPageControls(page, onProgress);
-      throw new Error("Could not find the file input in the Submit File dialog — see [diag] lines.");
+    // The dialog shows a drag-and-drop area + "Browse Files" button.
+    // The file input is typically hidden; try to use it directly first,
+    // then fall back to clicking Browse Files → Your device.
+    let fileAttached = await setFileInAnyFrame(page, SEL.fileInput, filePath, 10_000);
+    if (!fileAttached) {
+      // Click "Browse Files" → "Your device" to reveal the file input
+      await smartClick(page, SEL.browseFilesButton, "the Browse Files button in the Submit file dialog", onProgress, 10_000);
+      await page.waitForTimeout(600);
+      await smartClick(page, SEL.yourDeviceOption, "the Your device option in the Browse Files dropdown", onProgress, 5_000);
+      await page.waitForTimeout(600);
+      fileAttached = await setFileInAnyFrame(page, SEL.fileInput, filePath, 15_000);
     }
+    if (!fileAttached) {
+      await dumpPageControls(page, onProgress);
+      throw new Error("Could not attach file to the Submit File dialog — see [diag] lines.");
+    }
+    await onProgress(`step2: file attached: ${originalName}`);
 
     // ── Step 3: submission title ───────────────────────────────────────────────
     const titleBase = originalName.replace(/\.[^.]+$/, "");
     await setTitleIfEmpty(page, SEL.submissionTitleInput, titleBase, onProgress);
 
-    // ── Step 4: Upload and Review ──────────────────────────────────────────────
-    await onProgress("step4: clicking 'Upload and Review'");
-    if (!(await smartClick(page, SEL.uploadAndReviewButton,
-      "the Upload and Review button to proceed after attaching the file", onProgress, 30_000))) {
+    // ── Step 4: Upload and Preview ────────────────────────────────────────────
+    await onProgress("step4: clicking 'Upload and Preview'");
+    if (!(await smartClick(page, SEL.uploadAndPreviewButton,
+      "the Upload and Preview button to upload the file and proceed to the review screen", onProgress, 30_000))) {
       await dumpPageControls(page, onProgress);
-      throw new Error("Could not find the 'Upload and Review' button — see [diag] lines.");
+      throw new Error("Could not find 'Upload and Preview' button — see [diag] lines.");
     }
 
-    // ── Step 5: wait for review screen OR slow-preview confirm screen ────────────
-    await onProgress(`step5: waiting for 'Submit to Turnitin' or 'Confirm' — up to ${Math.round(uploadTimeoutMs / 1000)}s`);
-    let submissionConfirmedByRecovery = false;
+    // ── Step 5: Submit (plain "Submit" or "Submit to Turnitin" or slow Confirm) ─
+    // The instructor flow shows a "Submit without preview" screen (Turnitin generates
+    // a preview but it takes a while). The blue "Submit" button appears at the bottom.
+    await onProgress(`step5: waiting for Submit button — up to ${Math.round(uploadTimeoutMs / 1000)}s`);
+    let submissionConfirmed = false;
     {
       const step5Deadline = Date.now() + uploadTimeoutMs;
-      let step5Done = false;
-      while (Date.now() < step5Deadline && !step5Done) {
-        const hasSubmit      = (await locateInAnyFrame(page, SEL.submitToTurnitinButton)) !== null;
-        const hasSlowPreview = (await locateInAnyFrame(page, SEL.slowPreviewText)) !== null;
+      while (Date.now() < step5Deadline && !submissionConfirmed) {
+        const hasSubmit        = (await locateInAnyFrame(page, SEL.submitButton))          !== null;
+        const hasSubmitTII     = (await locateInAnyFrame(page, SEL.submitToTurnitinButton)) !== null;
+        const hasSlowPreview   = (await locateInAnyFrame(page, SEL.slowPreviewText))       !== null;
+        const alreadySubmitted = await waitForTextInAnyFrame(page, "File submitted", 500);
 
-        if (hasSubmit) {
-          await onProgress("step5: preview screen — clicking 'Submit to Turnitin'");
-          await smartClick(page, SEL.submitToTurnitinButton,
-            "the final Submit to Turnitin button to confirm the submission", onProgress, 10_000);
-          step5Done = true;
-        } else if (hasSlowPreview) {
-          await onProgress("step5: slow-preview screen — clicking 'Confirm' (trusted mouse event)");
-          let confirmClicked = false;
+        if (alreadySubmitted) {
+          await onProgress("step5: detected 'File submitted' toast — submission already went through");
+          submissionConfirmed = true;
+        } else if (hasSubmit || hasSubmitTII) {
+          const sel = hasSubmit ? SEL.submitButton : SEL.submitToTurnitinButton;
+          const label = hasSubmit ? "'Submit'" : "'Submit to Turnitin'";
+          await onProgress(`step5: ${label} button found — clicking`);
+          // Use trusted mouse click to avoid click-jacking guards
           for (const frame of page.frames()) {
-            const loc = frame.locator(SEL.confirmSlowPreview).first();
+            const loc = frame.locator(sel).first();
             if ((await loc.count().catch(() => 0)) === 0) continue;
             const box = await loc.boundingBox().catch(() => null);
             if (box) {
               const cx = Math.round(box.x + box.width / 2);
               const cy = Math.round(box.y + box.height / 2);
-              await onProgress(`step5: Confirm at (${cx},${cy}) — mouse click`);
               await page.mouse.move(cx, cy);
               await page.waitForTimeout(200);
               await page.mouse.click(cx, cy);
-              confirmClicked = true;
+              submissionConfirmed = true;
               break;
             }
-            if (!confirmClicked) {
-              await smartClick(page, SEL.confirmSlowPreview,
-                "the Confirm button after the slow-preview hourglass screen", onProgress, 5_000);
-              confirmClicked = true;
-            }
           }
-          await page.waitForTimeout(2_000);
-          const slowPreviewStillHere = (await locateInAnyFrame(page, SEL.slowPreviewText)) !== null;
-          const alreadyDone = await waitForTextInAnyFrame(page, "Submission Complete", 3_000);
-          if (!slowPreviewStillHere || alreadyDone) {
-            step5Done = true;
-          } else {
-            await onProgress("step5: Confirm click did not register — retrying");
+          if (!submissionConfirmed) {
+            await smartClick(page, sel, `the ${label} button to confirm submission`, onProgress, 5_000);
+            submissionConfirmed = true;
+          }
+        } else if (hasSlowPreview) {
+          await onProgress("step5: slow-preview screen — clicking 'Confirm'");
+          for (const frame of page.frames()) {
+            const loc = frame.locator(SEL.confirmSlowPreview).first();
+            if ((await loc.count().catch(() => 0)) === 0) continue;
+            const box = await loc.boundingBox().catch(() => null);
+            if (box) {
+              await page.mouse.move(Math.round(box.x + box.width / 2), Math.round(box.y + box.height / 2));
+              await page.waitForTimeout(200);
+              await page.mouse.click(Math.round(box.x + box.width / 2), Math.round(box.y + box.height / 2));
+              submissionConfirmed = true;
+              break;
+            }
           }
         } else {
           await page.waitForTimeout(500);
         }
       }
-      if (!step5Done) {
-        const recovered = await runStepRecovery(page, 5, onProgress);
-        if (!recovered) {
-          throw new Error("Could not find 'Submit to Turnitin' or 'Confirm' button after upload — see [diag] lines.");
-        }
-        submissionConfirmedByRecovery = true;
+      if (!submissionConfirmed) {
+        await dumpPageControls(page, onProgress);
+        throw new Error("Submit button never appeared — see [diag] lines.");
       }
     }
 
-    // ── Step 6: confirm completion ─────────────────────────────────────────────
-    if (!submissionConfirmedByRecovery) {
-      await onProgress("step6: waiting for 'Submission Complete!'");
-      const completed = await waitForTextInAnyFrame(page, "Submission Complete", 120_000);
-      if (!completed) {
-        await onProgress("step6: 'Submission Complete!' not seen — attempting AI recovery");
-        const recovered = await runStepRecovery(page, 6, onProgress);
-        if (!recovered) {
-          throw new Error(
-            "Submission Complete! never appeared (120s + AI recovery). Restarting upload flow on same assignment.",
-          );
-        }
-      }
+    // ── Step 6: wait for "Your file is processing." + "File submitted successfully." ──
+    await onProgress("step6: waiting for submission confirmation");
+    const processingToast = await waitForTextInAnyFrame(page, "file is processing", 60_000);
+    if (!processingToast) {
+      await onProgress("[warn] 'Your file is processing' toast not seen — continuing anyway");
     }
-    await tryClickInAnyFrame(page, SEL.closeModalButton, 10_000);
-    await onProgress("submission complete; dialog closed");
+    // The success toast arrives shortly after; close it
+    const successToast = await waitForTextInAnyFrame(page, "submitted successfully", 60_000);
+    if (successToast) {
+      await onProgress("step6: 'File submitted successfully.' — closing toast");
+      await tryClickInAnyFrame(page, SEL.closeToastButton, 5_000);
+    } else {
+      await onProgress("[warn] 'File submitted successfully' toast not seen — continuing");
+    }
+    await page.waitForTimeout(1_000);
 
     const sentinelId = await extractSubmissionIdFromPage(page) ?? "TII:submitted";
     await onSubmitted?.(sentinelId);
 
-    // ── Step 7: wait for the similarity score ─────────────────────────────────
-    await onProgress("waiting for similarity score");
-    const submissionId = await waitForSimilarity(page, submissionTimeoutMs, pollIntervalMs, onProgress);
+    // ── Step 7: wait for similarity score ─────────────────────────────────────
+    await onProgress("step7: waiting for similarity score");
+    const submissionId = await waitForSimilarity(page, originalName, submissionTimeoutMs, pollIntervalMs, onProgress);
 
-    // ── Step 8: download Similarity PDF ───────────────────────────────────────
-    await onProgress("downloading Similarity PDF");
-    const similarityPdf = await downloadSimilarityPdf(page, onProgress);
-
-    // ── Step 9: download AI Writing PDF (best-effort) ──────────────────────────
-    // The viewer is still open from step 8. Attempt to switch to the AI Writing
-    // tab and download that PDF. If the tab is not found, mark AI as failed and
-    // complete the job with the Similarity PDF only — the similarity result must
-    // never be blocked by a missing AI report.
-    await onProgress("downloading AI Writing PDF");
-    const aiPdf = await downloadAiPdf(page, onProgress);
+    // ── Steps 8 + 9: download both PDFs from the viewer ───────────────────────
+    await onProgress("step8+9: opening viewer and downloading both reports");
+    const { similarityPdf, aiPdf } = await downloadBothReports(page, onProgress);
 
     return { similarityPdf, aiPdf, submissionId };
 
@@ -570,106 +600,208 @@ export async function submitToTurnitin(opts: {
   }
 }
 
-// ── AI Writing PDF download ────────────────────────────────────────────────────
-// Attempts to click the AI Writing tab in the Turnitin viewer, then downloads
-// the PDF via the same Download → Current View flow.  Returns null (never throws)
-// so a missing AI tab never blocks the similarity result.
-async function downloadAiPdf(page: Page, onProgress: Logger): Promise<Buffer | null> {
+// ── Download both reports from the Turnitin viewer ────────────────────────────
+// The instructor viewer (reports-ap.integrity.turnitin.com) has a top-right
+// "Download" text button that opens a popup with:
+//   • Similarity Report
+//   • AI Writing Report
+//   • Grading and Feedback Report
+//   • Original File
+// We click "Download" twice — once for Similarity, once for AI Writing.
+async function downloadBothReports(
+  page: Page,
+  onProgress: Logger,
+): Promise<{ similarityPdf: Buffer; aiPdf: Buffer | null }> {
+  // Open the viewer by clicking the similarity score link
+  const ctx = page.context();
+  await onProgress("viewer: clicking similarity score link");
+  const newPagePromise = ctx.waitForEvent("page", { timeout: 60_000 }).catch(() => null);
+
+  const simClicked = await smartClick(page, SEL.similarityCell,
+    "the similarity percentage link or score badge that opens the Turnitin report viewer", onProgress, 15_000);
+  if (!simClicked) {
+    await dumpPageControls(page, onProgress);
+    throw new Error("Cannot click similarity score — check [diag] lines for correct selector.");
+  }
+
+  let viewer = await newPagePromise;
+  if (!viewer) {
+    await onProgress("no new tab — assuming same-tab navigation");
+    await page.waitForURL(/reports-ap\.integrity\.turnitin\.com|ev\.turnitin\.com/, { timeout: 30_000 }).catch(() => {});
+    viewer = page;
+  }
+
+  await viewer.waitForLoadState("domcontentloaded", { timeout: 60_000 }).catch(() => {});
+  await onProgress(`viewer loaded: ${viewer.url()}`);
+  await viewer.waitForTimeout(6_000); // allow the viewer JS to initialise
+
+  // ── Similarity Report ──────────────────────────────────────────────────────
+  await onProgress("viewer: downloading Similarity Report");
+  const similarityPdf = await downloadFromViewerMenu(viewer, SEL.downloadSimilarityReport,
+    "the Similarity Report menu item in the Download popup", onProgress);
+
+  // ── AI Writing Report (best-effort) ───────────────────────────────────────
+  // If anything goes wrong, return null rather than failing the job — the
+  // similarity result must never be blocked by a missing AI report.
+  await onProgress("viewer: downloading AI Writing Report");
+  const aiPdf = await downloadAiFromViewerMenu(viewer, onProgress);
+
+  return { similarityPdf, aiPdf };
+}
+
+// Download a specific report by:
+//  1. Clicking the "Download" text button (top right of viewer)
+//  2. Clicking the specified menu item
+async function downloadFromViewerMenu(
+  viewer: Page,
+  reportOptionSelector: string,
+  reportOptionIntent: string,
+  onProgress: Logger,
+): Promise<Buffer> {
+  const downloadPromise = viewer.waitForEvent("download", { timeout: 120_000 });
+  downloadPromise.catch(() => {});
+
+  // Click the "Download" button to open the popup menu
+  const menuOpened = await openViewerDownloadMenu(viewer, onProgress);
+  if (!menuOpened) {
+    await dumpPageControls(viewer, onProgress);
+    throw new Error("Could not open the Turnitin viewer Download menu — see [diag] lines.");
+  }
+
+  // Click the specific report option
+  const optionClicked = await clickMenuOption(viewer, reportOptionSelector, reportOptionIntent, onProgress);
+  if (!optionClicked) {
+    await dumpPageControls(viewer, onProgress);
+    throw new Error(`Could not click "${reportOptionIntent}" in the Download menu — see [diag] lines.`);
+  }
+
+  const download = await downloadPromise;
+  const dlPath = await download.path();
+  if (!dlPath) throw new Error("Download completed but no file path returned.");
+  await onProgress("report downloaded");
+  return await readFile(dlPath);
+}
+
+async function downloadAiFromViewerMenu(viewer: Page, onProgress: Logger): Promise<Buffer | null> {
   try {
-    await onProgress("ai-dl: looking for AI Writing tab in viewer");
-    // The viewer may already be open as a new tab from the similarity download.
-    // Try to find the AI Writing tab on the current page or any open page in context.
-    const aiTabFound = await smartClick(page, SEL.aiWritingTab,
-      "the AI Writing tab or button in the Turnitin report viewer", onProgress, 10_000);
-
-    if (!aiTabFound) {
-      await dumpPageControls(page, onProgress);
-      await onProgress("[warn] AI Writing tab not found — TODO: update SEL.aiWritingTab with real selector from [diag] lines. AI report will be marked failed.");
-      return null;
-    }
-
-    await onProgress("ai-dl: AI Writing tab clicked — waiting for content to load");
-    await page.waitForTimeout(4_000);
-
-    // Download the AI Writing report PDF using the same Download → Current View flow.
-    const ctx = page.context();
-    const DL_OPTION_TEXT = /current\s*view/i;
-    const downloadPromise = ctx.waitForEvent("download", { timeout: 60_000 });
+    const downloadPromise = viewer.waitForEvent("download", { timeout: 120_000 });
     downloadPromise.catch(() => {});
 
-    const mainFrame = page.mainFrame();
-    const DL_BTN_SEL = ['[class*="tii-icon-download"]', '[class*="sidebar-download-button"]', '[title="Download"]'].join(", ");
-
-    let menuOpened = false;
-    const dlBtnDeadline = Date.now() + 15_000;
-    while (Date.now() < dlBtnDeadline && !menuOpened) {
-      const n = await mainFrame.locator(DL_BTN_SEL).count().catch(() => 0);
-      if (n > 0) {
-        const box = await mainFrame.locator(DL_BTN_SEL).first().boundingBox().catch(() => null);
-        if (box) {
-          const cx = Math.round(box.x + box.width / 2);
-          const cy = Math.round(box.y + box.height / 2);
-          await page.mouse.move(cx, cy);
-          await page.waitForTimeout(400);
-          await page.mouse.click(cx, cy);
-          await page.waitForTimeout(3_000);
-          for (const fr of page.frames()) {
-            if ((await fr.getByText(DL_OPTION_TEXT).count().catch(() => 0)) > 0) { menuOpened = true; break; }
-          }
-        }
-      }
-      if (!menuOpened) await page.waitForTimeout(1_000);
-    }
-
+    const menuOpened = await openViewerDownloadMenu(viewer, onProgress);
     if (!menuOpened) {
-      await onProgress("[warn] ai-dl: could not open download menu for AI Writing PDF — AI report will be marked failed");
+      await onProgress("[warn] ai-dl: could not open Download menu — AI report marked failed");
       return null;
     }
 
-    // Click "Current View"
-    let clicked = false;
-    const cvDeadline = Date.now() + 10_000;
-    while (Date.now() < cvDeadline && !clicked) {
-      for (const fr of page.frames()) {
-        const loc = fr.getByText(DL_OPTION_TEXT).first();
-        if ((await loc.count().catch(() => 0)) > 0) {
-          const box = await loc.boundingBox().catch(() => null);
-          if (box) {
-            await page.mouse.move(Math.round(box.x + box.width / 2), Math.round(box.y + box.height / 2));
-            await page.waitForTimeout(200);
-            await page.mouse.click(Math.round(box.x + box.width / 2), Math.round(box.y + box.height / 2));
-          } else {
-            await loc.click({ timeout: 3_000 }).catch(() => {});
-          }
-          clicked = true;
-          break;
-        }
-      }
-      if (!clicked) await page.waitForTimeout(400);
-    }
-
-    if (!clicked) {
-      await onProgress("[warn] ai-dl: 'Current View' not clickable — AI report will be marked failed");
+    const optionClicked = await clickMenuOption(
+      viewer, SEL.downloadAiWritingReport,
+      "the AI Writing Report menu item in the Download popup", onProgress,
+    );
+    if (!optionClicked) {
+      await onProgress("[warn] ai-dl: 'AI Writing Report' option not found — AI report marked failed");
       return null;
     }
 
     const download = await downloadPromise;
     const dlPath = await download.path();
     if (!dlPath) {
-      await onProgress("[warn] ai-dl: download path null — AI report will be marked failed");
+      await onProgress("[warn] ai-dl: download path null — AI report marked failed");
       return null;
     }
-
-    await onProgress("ai-dl: AI Writing PDF received");
+    await onProgress("ai-dl: AI Writing Report downloaded");
     return await readFile(dlPath);
 
   } catch (err) {
-    await onProgress(`[warn] ai-dl: error downloading AI Writing PDF (${err instanceof Error ? err.message : String(err)}) — AI report will be marked failed`);
+    await onProgress(`[warn] ai-dl: error downloading AI Writing Report (${err instanceof Error ? err.message : String(err)}) — marked failed`);
     return null;
   }
 }
 
-// ── Shared helpers (same as student worker) ────────────────────────────────────
+// Click the "Download" text button at the top right of the viewer.
+// Returns true when the menu (with "Similarity Report" etc.) is visible.
+async function openViewerDownloadMenu(viewer: Page, onProgress: Logger): Promise<boolean> {
+  const DL_MENU_SENTINEL = /similarity report|ai writing report/i;
+
+  async function menuVisible(): Promise<boolean> {
+    for (const fr of viewer.frames()) {
+      const txt = await fr.evaluate(() => document.body.innerText).catch(() => "");
+      if (DL_MENU_SENTINEL.test(txt)) return true;
+    }
+    return false;
+  }
+
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    if (await menuVisible()) return true;
+
+    // Try the "Download" text button selectors
+    for (const frame of viewer.frames()) {
+      const loc = frame.locator(SEL.viewerDownloadButton).first();
+      if ((await loc.count().catch(() => 0)) === 0) continue;
+      const box = await loc.boundingBox().catch(() => null);
+      if (box) {
+        const cx = Math.round(box.x + box.width / 2);
+        const cy = Math.round(box.y + box.height / 2);
+        await viewer.mouse.move(cx, cy);
+        await viewer.waitForTimeout(300);
+        await viewer.mouse.click(cx, cy);
+        await viewer.waitForTimeout(1_500);
+        if (await menuVisible()) return true;
+      }
+    }
+
+    // AI fallback
+    const ai = await findElementWithAI(viewer, "the Download button at the top right of the Turnitin report viewer page that opens a menu with Similarity Report and AI Writing Report options");
+    if (ai) {
+      await onProgress(`[warn] [ai-fallback] Download button via AI: ${ai.selector} — update SEL.viewerDownloadButton`);
+      await tryClickInAnyFrame(viewer, ai.selector, 5_000);
+      await viewer.waitForTimeout(1_500);
+      if (await menuVisible()) return true;
+    }
+
+    await viewer.waitForTimeout(1_000);
+  }
+  return false;
+}
+
+// Click a specific item in the open Download popup menu.
+async function clickMenuOption(
+  viewer: Page,
+  selector: string,
+  intent: string,
+  onProgress: Logger,
+): Promise<boolean> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    for (const frame of viewer.frames()) {
+      const loc = frame.locator(selector).first();
+      if ((await loc.count().catch(() => 0)) === 0) continue;
+      const box = await loc.boundingBox().catch(() => null);
+      if (box) {
+        const cx = Math.round(box.x + box.width / 2);
+        const cy = Math.round(box.y + box.height / 2);
+        await viewer.mouse.move(cx, cy);
+        await viewer.waitForTimeout(200);
+        await viewer.mouse.click(cx, cy);
+        return true;
+      }
+      // Try regular click if no bounding box
+      await loc.click({ timeout: 3_000 }).catch(() => {});
+      return true;
+    }
+    // AI fallback
+    const ai = await findElementWithAI(viewer, intent);
+    if (ai) {
+      await onProgress(`[warn] [ai-fallback] menu option via AI: ${ai.selector} — update SEL`);
+      await tryClickInAnyFrame(viewer, ai.selector, 5_000);
+      return true;
+    }
+    await viewer.waitForTimeout(400);
+  }
+  return false;
+}
+
+// ── Shared helpers ─────────────────────────────────────────────────────────────
 
 async function locateInAnyFrame(page: Page, selector: string): Promise<Frame | null> {
   for (const f of page.frames()) {
@@ -738,15 +870,14 @@ async function setFileInAnyFrame(page: Page, selector: string, filePath: string,
 async function setTitleIfEmpty(page: Page, selector: string, value: string, onProgress: Logger): Promise<void> {
   const frame = await locateInAnyFrame(page, selector);
   if (!frame) {
-    const filled = await smartFill(page, selector, value,
-      "the submission title text input field in the Submit File modal", onProgress, 5_000);
-    if (!filled) await onProgress("no submission-title field found (continuing)");
+    await smartFill(page, selector, value,
+      "the submission title text input in the Submit file dialog", onProgress, 5_000);
     return;
   }
   try {
     const loc = frame.locator(selector).first();
     const current = (await loc.inputValue({ timeout: 3_000 }).catch(() => "")) ?? "";
-    if (!current.trim() || current.trim().toLowerCase() === "untitled") {
+    if (!current.trim() || current.trim().toLowerCase() === "untitled" || current.trim().toLowerCase() === "file name") {
       await loc.fill(value, { timeout: 5_000 });
       await onProgress(`set submission title: ${value}`);
     }
@@ -758,8 +889,11 @@ async function waitForTextInAnyFrame(page: Page, text: string, timeoutMs: number
   while (Date.now() < deadline) {
     for (const f of page.frames()) {
       if ((await f.locator(`text=${text}`).count().catch(() => 0)) > 0) return true;
+      // Also check body text for partial matches
+      const body = await f.evaluate(() => document.body.innerText).catch(() => "");
+      if (body.toLowerCase().includes(text.toLowerCase())) return true;
     }
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(400);
   }
   return false;
 }
@@ -772,8 +906,8 @@ async function dumpPageControls(page: Page, onProgress: Logger): Promise<string[
     lines.push(header);
     for (const f of page.frames()) {
       const controls = await f
-        .$$eval("input, button, a[href], select, textarea, [role=button]", (els) =>
-          els.slice(0, 60).map((e) => {
+        .$$eval("input, button, a[href], select, textarea, [role=button], [role=menuitem], li", (els) =>
+          els.slice(0, 80).map((e) => {
             const a = e as HTMLInputElement;
             return [
               a.tagName.toLowerCase(),
@@ -781,15 +915,16 @@ async function dumpPageControls(page: Page, onProgress: Logger): Promise<string[
               a.name ? `name=${a.name}` : "",
               a.id ? `id=${a.id}` : "",
               a.getAttribute("aria-label") ? `aria=${a.getAttribute("aria-label")}` : "",
+              a.getAttribute("data-testid") ? `testid=${a.getAttribute("data-testid")}` : "",
               a.placeholder ? `ph=${a.placeholder}` : "",
-              a.className ? `cls=${a.className.toString().slice(0, 60)}` : "",
-              (a.textContent || "").trim() ? `txt=${(a.textContent || "").trim().slice(0, 30)}` : "",
+              a.className ? `cls=${a.className.toString().slice(0, 80)}` : "",
+              (a.textContent || "").trim() ? `txt=${(a.textContent || "").trim().slice(0, 40)}` : "",
             ].filter(Boolean).join(" ");
           }),
         )
         .catch(() => [] as string[]);
       if (controls.length) {
-        const frameHeader = `[diag] frame(${f.url().slice(0, 70)}):`;
+        const frameHeader = `[diag] frame(${f.url().slice(0, 80)}):`;
         await onProgress(frameHeader);
         lines.push(frameHeader);
         for (const c of controls) {
@@ -808,35 +943,64 @@ async function dumpPageControls(page: Page, onProgress: Logger): Promise<string[
 async function extractSubmissionIdFromPage(page: Page): Promise<string | null> {
   try {
     for (const f of page.frames()) {
-      const href = await f.locator('a[href*="oid="]').first().getAttribute("href", { timeout: 3_000 }).catch(() => null);
+      // instructor viewer URL: trn:oid::3618:141639406
+      const url = f.url();
+      const m = url.match(/trn:oid::[\d:]+/) ?? url.match(/oid=(\d+)/) ?? url.match(/submission[_-]?id=(\d+)/i);
+      if (m) return m[0];
+      const href = await f.locator('a[href*="oid="]').first().getAttribute("href", { timeout: 2_000 }).catch(() => null);
       if (href) {
-        const m = href.match(/oid=(\d+)/);
-        if (m) return m[1];
+        const hm = href.match(/oid=(\d+)/);
+        if (hm) return hm[1];
       }
     }
   } catch { /* best-effort */ }
   return null;
 }
 
+// Wait for a similarity score to appear in the submission list for our document.
+// Prefers the row matching originalName (to avoid picking up other submissions),
+// falls back to any % link if the name-based search fails.
 async function waitForSimilarity(
-  page: Page, timeoutMs: number, pollMs: number, onProgress: Logger,
+  page: Page,
+  originalName: string,
+  timeoutMs: number,
+  pollMs: number,
+  onProgress: Logger,
 ): Promise<string | null> {
   const deadline = Date.now() + timeoutMs;
   let submissionId: string | null = null;
+  const titleBase = originalName.replace(/\.[^.]+$/, "").toLowerCase();
 
   while (Date.now() < deadline) {
     try {
       await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 });
     } catch { /* ignore */ }
 
-    const url = page.url();
-    const m = url.match(/oid=(\d+)/) ?? url.match(/submission[_-]?id=(\d+)/i);
-    if (m) submissionId = m[1];
-    if (!submissionId) submissionId = await extractSubmissionIdFromPage(page);
+    submissionId = submissionId ?? await extractSubmissionIdFromPage(page);
 
-    const text = await page.locator(SEL.similarityCell).first().innerText({ timeout: 5_000 }).catch(() => "");
+    // Look for a similarity % that is in the same row as our submission title
+    const found = await page.evaluate((title) => {
+      const rows = Array.from(document.querySelectorAll("tr, [role=row]"));
+      for (const row of rows) {
+        const rowText = row.textContent?.toLowerCase() ?? "";
+        if (!rowText.includes(title)) continue;
+        const simLink = row.querySelector('a[href*="submission-viewer"], a[href*="reports-ap"], a:not([href=""])');
+        if (simLink && /\d+\s*%/.test(simLink.textContent ?? "")) {
+          return simLink.textContent?.trim() ?? null;
+        }
+      }
+      return null;
+    }, titleBase).catch(() => null);
+
+    if (found) {
+      await onProgress(`similarity ready: ${found}`);
+      return submissionId;
+    }
+
+    // Fallback: any visible % link
+    const text = await page.locator(SEL.similarityCell).first().innerText({ timeout: 3_000 }).catch(() => "");
     if (/\d+\s*%/.test(text)) {
-      await onProgress(`similarity ready: ${text.trim()}`);
+      await onProgress(`similarity ready (fallback): ${text.trim()}`);
       return submissionId;
     }
 
@@ -844,148 +1008,4 @@ async function waitForSimilarity(
     await new Promise((r) => setTimeout(r, pollMs));
   }
   throw new Error("Timed out waiting for similarity score");
-}
-
-async function downloadSimilarityPdf(page: Page, onProgress: Logger): Promise<Buffer> {
-  const ctx = page.context();
-  const DL_OPTION_TEXT = /current\s*view/i;
-
-  await onProgress("dl-step1: clicking similarity score link to open viewer");
-  const newPagePromise = ctx.waitForEvent("page", { timeout: 60_000 }).catch(() => null);
-
-  const simClicked = await smartClick(page, SEL.similarityCell,
-    "the similarity percentage link or score cell that opens the Turnitin report viewer", onProgress, 15_000);
-  if (!simClicked) {
-    await dumpPageControls(page, onProgress);
-    throw new Error("Cannot click similarity cell — check [diag] lines above for correct selector");
-  }
-
-  let viewer = await newPagePromise;
-  if (!viewer) {
-    await onProgress("no new tab detected — assuming same-tab navigation");
-    await page.waitForURL(/ev\.turnitin\.com/, { timeout: 30_000 }).catch(() => {});
-    viewer = page;
-  }
-
-  await viewer.waitForLoadState("domcontentloaded", { timeout: 60_000 }).catch(() => {});
-  await onProgress(`dl-step1 done: viewer url=${viewer.url()}`);
-  await viewer.waitForTimeout(6_000);
-  await viewer.mouse.move(1280, 450).catch(() => {});
-  await viewer.waitForTimeout(1_000);
-
-  const downloadPromise = viewer.waitForEvent("download", { timeout: 120_000 });
-  downloadPromise.catch(() => {});
-
-  const v = viewer;
-
-  async function dlDialogOpen(): Promise<boolean> {
-    for (const fr of v.frames()) {
-      if ((await fr.getByText(DL_OPTION_TEXT).count().catch(() => 0)) > 0) return true;
-    }
-    return false;
-  }
-
-  async function clickCurrentView(timeoutMs: number): Promise<boolean> {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      for (const fr of v.frames()) {
-        const loc = fr.getByText(DL_OPTION_TEXT).first();
-        if ((await loc.count().catch(() => 0)) > 0) {
-          const box = await loc.boundingBox().catch(() => null);
-          if (box) {
-            const cx = Math.round(box.x + box.width / 2);
-            const cy = Math.round(box.y + box.height / 2);
-            await v.mouse.move(cx, cy);
-            await v.waitForTimeout(200);
-            await v.mouse.click(cx, cy);
-          } else {
-            await loc.click({ timeout: 3_000 }).catch(() => {});
-          }
-          return true;
-        }
-      }
-      await v.waitForTimeout(400);
-    }
-    return false;
-  }
-
-  await onProgress("dl-step2: looking for download button");
-
-  const DL_BTN_SEL = [
-    '[class*="tii-icon-download"]',
-    '[class*="sidebar-download-button"]',
-    '[title="Download"]',
-  ].join(", ");
-
-  const mainFrame = viewer.mainFrame();
-
-  let menuOpened = false;
-  const dlBtnDeadline = Date.now() + 15_000;
-  while (Date.now() < dlBtnDeadline && !menuOpened) {
-    const n = await mainFrame.locator(DL_BTN_SEL).count().catch(() => 0);
-    if (n > 0) {
-      const box = await mainFrame.locator(DL_BTN_SEL).first().boundingBox().catch(() => null);
-      if (box) {
-        const cx = Math.round(box.x + box.width / 2);
-        const cy = Math.round(box.y + box.height / 2);
-        await onProgress(`dl-step2: download button found at (${cx},${cy}), clicking`);
-        await viewer.mouse.move(cx, cy);
-        await viewer.waitForTimeout(400);
-        await viewer.mouse.click(cx, cy);
-        await viewer.waitForTimeout(3_000);
-        if (await dlDialogOpen()) {
-          await onProgress("dl-step2: dialog found — 'Current View' visible");
-          menuOpened = true;
-        }
-      }
-    }
-    if (!menuOpened) await viewer.waitForTimeout(1_000);
-  }
-
-  if (!menuOpened) {
-    await onProgress("dl-step2: fast path missed — probing [role=button] elements");
-    const btns = await mainFrame.locator("[role='button'], button").all().catch(() => [] as Locator[]);
-    for (const btn of btns) {
-      if (viewer.isClosed()) break;
-      try {
-        const box = await btn.boundingBox().catch(() => null);
-        if (!box) continue;
-        const beforeUrl = viewer.url();
-        const cx = Math.round(box.x + box.width / 2);
-        const cy = Math.round(box.y + box.height / 2);
-        await viewer.mouse.move(cx, cy);
-        await viewer.waitForTimeout(200);
-        await viewer.mouse.click(cx, cy);
-        await viewer.waitForTimeout(2_500);
-        if (viewer.isClosed()) break;
-        if (viewer.url() !== beforeUrl) {
-          await viewer.goBack({ timeout: 10_000 }).catch(() => {});
-          continue;
-        }
-        if (await dlDialogOpen()) { menuOpened = true; break; }
-      } catch {
-        if (viewer.isClosed()) break;
-      }
-    }
-  }
-
-  if (!menuOpened) {
-    if (!viewer.isClosed()) await dumpPageControls(viewer, onProgress);
-    throw new Error("Could not open the Turnitin download menu — see [diag] lines above.");
-  }
-
-  await viewer.waitForTimeout(500);
-
-  await onProgress("dl-step3: clicking 'Current View'");
-  if (!(await clickCurrentView(15_000))) {
-    if (!viewer.isClosed()) await dumpPageControls(viewer, onProgress);
-    throw new Error("Download dialog open but could not click 'Current View' — see [diag] lines above.");
-  }
-
-  const download = await downloadPromise;
-  const dlPath = await download.path();
-  if (!dlPath) throw new Error("Download completed but no file path returned");
-
-  await onProgress("Similarity PDF download received");
-  return await readFile(dlPath);
 }
