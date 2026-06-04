@@ -156,6 +156,7 @@ export type Database = {
       }
       jobs: {
         Row: {
+          ai_report_status: string | null
           api_client_id: string | null
           attempts: number
           bull_job_id: string | null
@@ -165,11 +166,13 @@ export type Database = {
           external_ref: string | null
           finished_at: string | null
           id: string
+          instructor_assignment_id: string | null
           last_polled_at: string | null
           max_attempts: number
           metadata: Json
           mime_type: string | null
           original_name: string
+          pipeline: string
           portal_id: string | null
           queued_at: string | null
           similarity_percent: number | null
@@ -184,6 +187,7 @@ export type Database = {
           worker_id: string | null
         }
         Insert: {
+          ai_report_status?: string | null
           api_client_id?: string | null
           attempts?: number
           bull_job_id?: string | null
@@ -193,11 +197,13 @@ export type Database = {
           external_ref?: string | null
           finished_at?: string | null
           id?: string
+          instructor_assignment_id?: string | null
           last_polled_at?: string | null
           max_attempts?: number
           metadata?: Json
           mime_type?: string | null
           original_name: string
+          pipeline?: string
           portal_id?: string | null
           queued_at?: string | null
           similarity_percent?: number | null
@@ -212,6 +218,7 @@ export type Database = {
           worker_id?: string | null
         }
         Update: {
+          ai_report_status?: string | null
           api_client_id?: string | null
           attempts?: number
           bull_job_id?: string | null
@@ -221,11 +228,13 @@ export type Database = {
           external_ref?: string | null
           finished_at?: string | null
           id?: string
+          instructor_assignment_id?: string | null
           last_polled_at?: string | null
           max_attempts?: number
           metadata?: Json
           mime_type?: string | null
           original_name?: string
+          pipeline?: string
           portal_id?: string | null
           queued_at?: string | null
           similarity_percent?: number | null
@@ -315,6 +324,7 @@ export type Database = {
           file_name: string
           id: string
           job_id: string
+          kind: string
           mime_type: string | null
           size_bytes: number | null
           storage_path: string
@@ -324,6 +334,7 @@ export type Database = {
           file_name: string
           id?: string
           job_id: string
+          kind?: string
           mime_type?: string | null
           size_bytes?: number | null
           storage_path: string
@@ -333,6 +344,7 @@ export type Database = {
           file_name?: string
           id?: string
           job_id?: string
+          kind?: string
           mime_type?: string | null
           size_bytes?: number | null
           storage_path?: string
