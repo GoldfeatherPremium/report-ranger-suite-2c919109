@@ -31,7 +31,7 @@ export function UploadDropzone({
         done++; setProgress(Math.round((done / list.length) * 100));
         continue;
       }
-      const { error } = await uploadAndCreateJob(user.id, f);
+      const { error } = await uploadAndCreateJob(user.id, f, pipeline);
       if (error) toast.error(`${f.name}: ${error}`);
       else toast.success(`${f.name} queued`);
       done++; setProgress(Math.round((done / list.length) * 100));
@@ -39,7 +39,7 @@ export function UploadDropzone({
     setUploading(false);
     setProgress(0);
     onUploaded?.();
-  }, [user, onUploaded]);
+  }, [user, onUploaded, pipeline]);
 
   return (
     <div

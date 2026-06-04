@@ -77,7 +77,7 @@ create trigger trg_turnitin_instructor_assignments_updated before update on publ
 create table public.turnitin_instructor_slot_usage (
   id uuid primary key default gen_random_uuid(),
   assignment_id uuid not null references public.turnitin_instructor_assignments(id) on delete cascade,
-  job_id uuid not null,
+  job_id uuid not null references public.jobs(id) on delete cascade,
   submitted_at timestamptz not null default now(),
   freed_at timestamptz,
   turnitin_submission_id text
