@@ -370,6 +370,9 @@ export async function submitToTurnitin(opts: {
       }
     }
 
+    // ── Enter the assignment inbox (handle CLASS HOME redirect → click View) ────
+    await enterAssignmentInbox(page, assignment.assignment_label, onProgress);
+
     // ── RESUME PATH ────────────────────────────────────────────────────────────
     if (existingSubmissionId) {
       await onProgress(`resuming (already submitted, id=${existingSubmissionId})`);
@@ -1003,6 +1006,61 @@ async function gotoAssignmentPage(page: Page, url: string, onProgress: Logger): 
     await page.waitForTimeout(1_000);
   }
   await onProgress(`assignment page settle timeout (continuing anyway): ${page.url().slice(0, 90)}`);
+}
+
+// Turnitin frequently redirects the configured assignment URL to the CLASS HOME
+// page — a list of assignments, each with a "View" action that opens its inbox.
+// If we land there, click "View" on the row whose name matches the configured
+// assignment (e.g. "Research"), so the rest of the flow runs on the real
+// submission inbox (the table with the per-student ⋮ menus). No-op if we're
+// already on an inbox / some other page.
+async function enterAssignmentInbox(page: Page, assignmentName: string, onProgress: Logger): Promise<void> {
+  const isClassHome = await page.evaluate(() =>
+    /class\s*homepage|class\s*home|add assignment|now viewing/i.test(document.body.innerText || ""),
+  ).catch(() => false);
+  if (!isClassHome) return;
+
+  await onProgress(`nav: class-home page detected — clicking "View" for assignment "${assignmentName}"`);
+
+  const clicked = await page.evaluate((name) => {
+    const findView = (row: Element): HTMLElement | undefined =>
+      Array.from(row.querySelectorAll("a, button, input")).find((el) => {
+        const t = (el.textContent || (el as HTMLInputElement).value || "").trim();
+        return /^view$/i.test(t);
+      }) as HTMLElement | undefined;
+    const rows = Array.from(document.querySelectorAll("tr"));
+    // Row whose text contains the configured assignment name.
+    for (const row of rows) {
+      if (name && !(row.textContent || "").toLowerCase().includes(name.toLowerCase())) continue;
+      const v = findView(row);
+      if (v) { v.scrollIntoView({ block: "center" }); v.click(); return true; }
+    }
+    return false;
+  }, assignmentName).catch(() => false);
+
+  if (!clicked) {
+    await onProgress(`[warn] nav: no "View" link found for assignment "${assignmentName}" on the class-home page`);
+    return;
+  }
+
+  // Wait for the submission inbox to render after the View navigation.
+  await page.waitForLoadState("domcontentloaded", { timeout: 30_000 }).catch(() => {});
+  await page.waitForLoadState("networkidle", { timeout: 20_000 }).catch(() => {});
+  const deadline = Date.now() + 25_000;
+  while (Date.now() < deadline) {
+    const stillClassHome = await page.evaluate(() =>
+      /class\s*homepage|add assignment/i.test(document.body.innerText || ""),
+    ).catch(() => false);
+    const ready =
+      !stillClassHome && (
+        (await page.locator("table tbody tr, [role=row]").count().catch(() => 0)) > 1 ||
+        (await locateInAnyFrame(page, SEL.resubmitMenuItem)) !== null ||
+        (await page.evaluate(() => /similarity|ai writing/i.test(document.body.innerText || "")).catch(() => false))
+      );
+    if (ready) { await onProgress(`nav: assignment inbox loaded: ${page.url().slice(0, 80)}`); return; }
+    await page.waitForTimeout(1_000);
+  }
+  await onProgress("nav: inbox readiness timed out after View (continuing anyway)");
 }
 
 async function locateInAnyFrame(page: Page, selector: string): Promise<Frame | null> {
