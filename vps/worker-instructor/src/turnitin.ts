@@ -1,4 +1,4 @@
-import { chromium, Browser, Page, Frame, BrowserContext } from "playwright";
+import { chromium, Browser, Page, Frame, BrowserContext, type Locator } from "playwright";
 import { writeFile, mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -386,6 +386,7 @@ export async function submitToTurnitin(opts: {
     {
       const step1Deadline = Date.now() + 90_000;
       await scrollTableIntoView(page);
+      await captureDebugState(page, "step1-start", onProgress);
 
       while (Date.now() < step1Deadline && !submitFileOpened) {
         // Collect ⋮ buttons as page-relative click points, sorted top→bottom so
@@ -465,7 +466,7 @@ export async function submitToTurnitin(opts: {
       }
 
       if (!submitFileOpened) {
-        await dumpPageControls(page, onProgress);
+        await captureDebugState(page, "step1-fail", onProgress);
         const diagLines = await dumpPageControls(page, onProgress);
         const state = await aiDetectPageState(diagLines, page.url(), await page.title().catch(() => ""), onProgress);
         if (state === "captcha") throw new Error("CAPTCHA on assignment page.");
@@ -1014,7 +1015,23 @@ async function collectMoreDotsBoxes(page: Page, onProgress: Logger): Promise<{ x
   const boxes: { x: number; y: number }[] = [];
   const labels: string[] = [];
 
+  // ── Strategy 1 (preferred): accessible role + name, across every frame. ──────
+  // getByRole pierces open shadow DOM and matches by accessible name, so it
+  // targets the ⋮ "More actions" buttons and never the language picker.
   for (const frame of page.frames()) {
+    const loc = frame.getByRole("button", { name: /more actions/i });
+    const n = await loc.count().catch(() => 0);
+    for (let i = 0; i < n; i++) {
+      const b = await loc.nth(i).boundingBox().catch(() => null);
+      if (b && b.width > 0 && b.height > 0) {
+        boxes.push({ x: b.x + b.width / 2, y: b.y + b.height / 2 });
+        labels.push("role:More actions");
+      }
+    }
+  }
+
+  // ── Strategy 2 (fallback): deep shadow-DOM walk by class/label. ──────────────
+  if (boxes.length === 0) for (const frame of page.frames()) {
     let offsetX = 0, offsetY = 0;
     if (frame !== page.mainFrame()) {
       const fe = await frame.frameElement().catch(() => null);
@@ -1093,6 +1110,84 @@ async function scrollTableIntoView(page: Page): Promise<void> {
     await page.waitForTimeout(350);
   }
   await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+}
+
+// Capture a full diagnostic snapshot: the frame tree, a per-frame census of the
+// controls we care about (counted THROUGH open shadow roots), and a full-page
+// screenshot to /tmp. This is what tells us, without DevTools on the VPS,
+// whether the ⋮ buttons exist, which frame they live in, and whether an overlay
+// is covering the table.
+async function captureDebugState(page: Page, tag: string, onProgress: Logger): Promise<void> {
+  try {
+    const frames = page.frames();
+    await onProgress(`[dbg ${tag}] url=${page.url().slice(0, 90)} frames=${frames.length}`);
+
+    for (const frame of frames) {
+      const census = await frame.evaluate(() => {
+        const c = { moreActions: 0, haspopup: 0, optionsDropdown: 0, rows: 0, resubmit: 0, shadowHosts: 0 };
+        const walk = (root: Document | ShadowRoot) => {
+          c.moreActions     += root.querySelectorAll('button[aria-label="More actions" i], button.options-dropdown').length;
+          c.haspopup        += root.querySelectorAll("[aria-haspopup]").length;
+          c.optionsDropdown += root.querySelectorAll(".options-dropdown").length;
+          c.rows            += root.querySelectorAll("tr, [role=row]").length;
+          c.resubmit        += root.querySelectorAll('[title="Resubmit file" i]').length;
+          for (const el of Array.from(root.querySelectorAll("*"))) {
+            const sr = (el as HTMLElement).shadowRoot;
+            if (sr) { c.shadowHosts++; walk(sr); }
+          }
+        };
+        walk(document);
+        return c;
+      }).catch(() => null);
+      if (census) {
+        await onProgress(
+          `[dbg ${tag}]   frame "${(frame.name() || "").slice(0, 24)}" ${frame.url().slice(0, 48)} ` +
+          `more=${census.moreActions} haspopup=${census.haspopup} opts=${census.optionsDropdown} ` +
+          `rows=${census.rows} resubmit=${census.resubmit} shadowHosts=${census.shadowHosts}`,
+        );
+      }
+    }
+
+    const path = `/tmp/tii-${tag}-${Date.now()}.png`;
+    await page.screenshot({ path, fullPage: true }).catch(() => {});
+    await onProgress(`[dbg ${tag}] full-page screenshot saved: ${path}`);
+  } catch (e) {
+    await onProgress(`[dbg ${tag}] capture failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+// safeClick — robust click ladder: visible → stable → scrolled → enabled, then
+// normal click, then force click, then a raw bounding-box mouse click. Returns
+// whether any strategy succeeded and logs which one (and why others failed).
+export async function safeClick(page: Page, locator: Locator, label: string, log: Logger, timeoutMs = 30_000): Promise<boolean> {
+  try {
+    await locator.waitFor({ state: "visible", timeout: timeoutMs });
+  } catch {
+    await log(`[safeClick] "${label}" never became visible within ${timeoutMs}ms`);
+    return false;
+  }
+  await locator.scrollIntoViewIfNeeded({ timeout: 5_000 }).catch(() => {});
+
+  // 1) normal click (waits for stability + enabled + hit-testing)
+  try { await locator.click({ timeout: 10_000 }); return true; }
+  catch (e) { await log(`[safeClick] "${label}" normal click failed: ${(e as Error).message.split("\n")[0]}`); }
+
+  // 2) force click (bypasses actionability/overlay hit-testing)
+  try { await locator.click({ force: true, timeout: 10_000 }); await log(`[safeClick] "${label}" needed force click`); return true; }
+  catch (e) { await log(`[safeClick] "${label}" force click failed: ${(e as Error).message.split("\n")[0]}`); }
+
+  // 3) raw mouse click at the element centre (page-relative coords)
+  await locator.scrollIntoViewIfNeeded({ timeout: 5_000 }).catch(() => {});
+  const box = await locator.boundingBox().catch(() => null);
+  if (box) {
+    await page.mouse.move(Math.round(box.x + box.width / 2), Math.round(box.y + box.height / 2));
+    await page.waitForTimeout(120);
+    await page.mouse.click(Math.round(box.x + box.width / 2), Math.round(box.y + box.height / 2));
+    await log(`[safeClick] "${label}" needed bounding-box mouse click`);
+    return true;
+  }
+  await log(`[safeClick] "${label}" — no bounding box; all strategies exhausted`);
+  return false;
 }
 
 async function fillInAnyFrame(page: Page, selector: string, value: string, timeoutMs: number): Promise<boolean> {
