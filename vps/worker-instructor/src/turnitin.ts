@@ -1053,9 +1053,11 @@ async function enterAssignmentInbox(page: Page, assignmentName: string, onProgre
     ).catch(() => false);
     const ready =
       !stillClassHome && (
+        (await collectMoreDotsBoxes(page, async () => {})).length > 0 ||
         (await page.locator("table tbody tr, [role=row]").count().catch(() => 0)) > 1 ||
-        (await locateInAnyFrame(page, SEL.resubmitMenuItem)) !== null ||
-        (await page.evaluate(() => /similarity|ai writing/i.test(document.body.innerText || "")).catch(() => false))
+        (await page.evaluate(() =>
+          /submission list|student submissions|rows per page|similar|ai wri/i.test(document.body.innerText || ""),
+        ).catch(() => false))
       );
     if (ready) { await onProgress(`nav: assignment inbox loaded: ${page.url().slice(0, 80)}`); return; }
     await page.waitForTimeout(1_000);
