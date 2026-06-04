@@ -6,6 +6,12 @@ import type { SlotInfo } from "./supabase.js";
 import { aiDetectPageState } from "./ai-resolver.js";
 import { findElementWithAI } from "./ai-helper.js";
 
+// Per-slot Playwright storageState cache. Populated on first successful login;
+// reused on subsequent jobs for the same slot to skip the login form.
+// Lost on worker restart — a fresh login on restart is acceptable.
+type StorageStateObj = Awaited<ReturnType<import("playwright").BrowserContext["storageState"]>>;
+const sessionCache = new Map<string, StorageStateObj>();
+
 // Thrown when Turnitin explicitly refuses a resubmission on the current slot.
 // The worker catches this, frees the slot, and tries the next available one.
 export class ResubmitDeniedError extends Error {
@@ -338,68 +344,97 @@ export async function submitToTurnitin(opts: {
     // contains "HeadlessChrome", which Turnitin and similar sites often block
     // with a challenge page that has no login form (which then looks like a
     // missing selector). A realistic UA + viewport avoids that.
+    const savedState = sessionCache.get(slot.slot_id);
     const ctx = await browser.newContext({
       acceptDownloads: true,
       userAgent:
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
       viewport: { width: 1366, height: 900 },
       locale: "en-US",
+      ...(savedState ? { storageState: savedState } : {}),
     });
     const page = await ctx.newPage();
 
-    // ── Login ────────────────────────────────────────────────────────────────
-    await onProgress(`opening login: ${slot.login_url}`);
-    await page.goto(slot.login_url, { waitUntil: "domcontentloaded", timeout: 60_000 });
-    await page.waitForLoadState("load", { timeout: 60_000 }).catch(() => {});
+    // ── Login (or reuse cached session) ──────────────────────────────────────
+    let usedCachedSession = savedState != null;
 
-    await onProgress(`login page loaded: url=${page.url()} title=${await page.title().catch(() => "?")}`);
-
-    // Find and fill the email field anywhere on the page (including iframes).
-    const emailOk = await smartFill(page, SEL.emailInput, slot.email,
-      "the email or username input field on the Turnitin login page", onProgress, 30_000);
-    if (!emailOk) {
-      await dumpPageControls(page, onProgress);
-      throw new Error(
-        "Could not find the Turnitin email field. The [diag] lines above list every input/button on the page — share them and I'll set the exact selectors. (The login URL may also be wrong for these accounts.)",
-      );
-    }
-    const passwordOk = await smartFill(page, SEL.passwordInput, slot.password,
-      "the password input field on the Turnitin login page", onProgress, 15_000);
-    if (!passwordOk) {
-      await dumpPageControls(page, onProgress);
-      throw new Error("Found the email field but not the password field — see the [diag] lines above.");
-    }
-
-    await Promise.all([
-      page.waitForLoadState("networkidle", { timeout: 60_000 }).catch(() => {}),
-      smartClick(page, SEL.loginButton, "the Log in / Sign in submit button on the login page",
-        onProgress, 15_000).catch(() => page.keyboard.press("Enter")),
-    ]);
-    await onProgress(`after login submit: url=${page.url()} title=${await page.title().catch(() => "?")}`);
-
-    // If the email field is still present, the login almost certainly failed.
-    // Also check for CAPTCHAs or unexpected pages via AI.
-    if (await locateInAnyFrame(page, SEL.emailInput)) {
-      const diagLines = await dumpPageControls(page, onProgress);
-      const pageState = await aiDetectPageState(
-        diagLines, page.url(), await page.title().catch(() => ""), onProgress,
-      );
-      if (pageState === "captcha") {
-        throw new Error("Login blocked by CAPTCHA — manual intervention required (see [diag] lines).");
-      }
-      throw new Error("Still on a login form after submitting — login likely failed (check credentials/captcha; see [diag] lines).");
-    }
-    await onProgress("logged in");
-
-    // ── Go to the assignment dashboard ─────────────────────────────────────────
-    // submit_url should be the .../assignment/type/paper/dashboard/<id> URL,
-    // i.e. the page with the "Upload Submission" button.
-    if (slot.submit_url) {
-      await onProgress(`opening assignment dashboard: ${slot.submit_url}`);
-      await page.goto(slot.submit_url, { waitUntil: "domcontentloaded", timeout: 60_000 });
+    if (usedCachedSession) {
+      // Navigate directly to the assignment dashboard with the cached session — skip login page.
+      const targetUrl = slot.submit_url ?? slot.login_url;
+      await onProgress(`cached session found for slot ${slot.slot_label} — navigating directly to ${targetUrl}`);
+      await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
       await page.waitForLoadState("load", { timeout: 60_000 }).catch(() => {});
-    } else {
-      await onProgress("WARNING: slot has no submit_url; staying on the post-login page");
+
+      // If the login form appeared, the session expired — clear cache and fall through to full login.
+      if (await locateInAnyFrame(page, SEL.emailInput)) {
+        await onProgress(`cached session expired for slot ${slot.slot_label} — clearing cache, re-logging in`);
+        sessionCache.delete(slot.slot_id);
+        usedCachedSession = false;
+      } else {
+        await onProgress(`session valid — login skipped for slot ${slot.slot_label}`);
+      }
+    }
+
+    if (!usedCachedSession) {
+      // Full login flow.
+      await onProgress(`opening login: ${slot.login_url}`);
+      await page.goto(slot.login_url, { waitUntil: "domcontentloaded", timeout: 60_000 });
+      await page.waitForLoadState("load", { timeout: 60_000 }).catch(() => {});
+
+      await onProgress(`login page loaded: url=${page.url()} title=${await page.title().catch(() => "?")}`);
+
+      // Find and fill the email field anywhere on the page (including iframes).
+      const emailOk = await smartFill(page, SEL.emailInput, slot.email,
+        "the email or username input field on the Turnitin login page", onProgress, 30_000);
+      if (!emailOk) {
+        await dumpPageControls(page, onProgress);
+        throw new Error(
+          "Could not find the Turnitin email field. The [diag] lines above list every input/button on the page — share them and I'll set the exact selectors. (The login URL may also be wrong for these accounts.)",
+        );
+      }
+      const passwordOk = await smartFill(page, SEL.passwordInput, slot.password,
+        "the password input field on the Turnitin login page", onProgress, 15_000);
+      if (!passwordOk) {
+        await dumpPageControls(page, onProgress);
+        throw new Error("Found the email field but not the password field — see the [diag] lines above.");
+      }
+
+      await Promise.all([
+        page.waitForLoadState("networkidle", { timeout: 60_000 }).catch(() => {}),
+        smartClick(page, SEL.loginButton, "the Log in / Sign in submit button on the login page",
+          onProgress, 15_000).catch(() => page.keyboard.press("Enter")),
+      ]);
+      await onProgress(`after login submit: url=${page.url()} title=${await page.title().catch(() => "?")}`);
+
+      // If the email field is still present, the login almost certainly failed.
+      // Also check for CAPTCHAs or unexpected pages via AI.
+      if (await locateInAnyFrame(page, SEL.emailInput)) {
+        const diagLines = await dumpPageControls(page, onProgress);
+        const pageState = await aiDetectPageState(
+          diagLines, page.url(), await page.title().catch(() => ""), onProgress,
+        );
+        if (pageState === "captcha") {
+          throw new Error("Login blocked by CAPTCHA — manual intervention required (see [diag] lines).");
+        }
+        throw new Error("Still on a login form after submitting — login likely failed (check credentials/captcha; see [diag] lines).");
+      }
+      await onProgress("logged in");
+
+      // Save session state so the next job on this slot can skip login.
+      const state = await ctx.storageState();
+      sessionCache.set(slot.slot_id, state);
+      await onProgress(`session saved to cache for slot ${slot.slot_label}`);
+
+      // ── Go to the assignment dashboard ──────────────────────────────────────
+      // submit_url should be the .../assignment/type/paper/dashboard/<id> URL,
+      // i.e. the page with the "Upload Submission" button.
+      if (slot.submit_url) {
+        await onProgress(`opening assignment dashboard: ${slot.submit_url}`);
+        await page.goto(slot.submit_url, { waitUntil: "domcontentloaded", timeout: 60_000 });
+        await page.waitForLoadState("load", { timeout: 60_000 }).catch(() => {});
+      } else {
+        await onProgress("WARNING: slot has no submit_url; staying on the post-login page");
+      }
     }
 
     // ── RESUME PATH: document already submitted in a prior attempt ─────────────
