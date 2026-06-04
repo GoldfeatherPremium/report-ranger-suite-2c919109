@@ -7,7 +7,13 @@ import { cn } from "@/lib/utils";
 
 const MAX_BYTES = 50 * 1024 * 1024;
 
-export function UploadDropzone({ onUploaded }: { onUploaded?: () => void }) {
+export function UploadDropzone({
+  onUploaded,
+  pipeline = "student",
+}: {
+  onUploaded?: () => void;
+  pipeline?: "student" | "instructor";
+}) {
   const { user } = useAuth();
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);

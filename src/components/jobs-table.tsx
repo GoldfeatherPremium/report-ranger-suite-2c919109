@@ -4,6 +4,7 @@ import { Download, RotateCw, X, Trash2, FileText } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "./status-badge";
+import { cn } from "@/lib/utils";
 import {
   ACTIVE_STATUSES, cancelJob, deleteJob, downloadReport, retryJob,
   type Job,
@@ -25,9 +26,9 @@ export function JobsTable({
   const [pending, setPending] = useState<string | null>(null);
   const [toDelete, setToDelete] = useState<Job | null>(null);
 
-  async function handleDownload(j: Job) {
+  async function handleDownload(j: Job, kind: "similarity" | "ai" = "similarity") {
     setPending(j.id);
-    const url = await downloadReport(j.id);
+    const url = await downloadReport(j.id, kind);
     setPending(null);
     if (!url) return toast.error("Report unavailable");
     window.open(url, "_blank");
@@ -88,6 +89,14 @@ export function JobsTable({
                     <div className="flex items-center gap-2">
                       <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
                       <span className="truncate font-medium">{j.original_name}</span>
+                      <span className={cn(
+                        "shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide",
+                        j.pipeline === "instructor"
+                          ? "border-violet-400/40 bg-violet-500/10 text-violet-500"
+                          : "border-border bg-muted/60 text-muted-foreground",
+                      )}>
+                        {j.pipeline === "instructor" ? "AI" : "Student"}
+                      </span>
                     </div>
                     {j.error && <div className="mt-1 text-xs text-destructive truncate max-w-md">{j.error}</div>}
                   </td>
@@ -98,7 +107,17 @@ export function JobsTable({
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center justify-end gap-1">
-                      {j.status === "completed" && (
+                      {j.status === "completed" && j.pipeline === "instructor" && (
+                        <>
+                          <Button size="sm" variant="ghost" disabled={busy} onClick={() => handleDownload(j, "similarity")} title="Similarity PDF">
+                            <Download className="h-4 w-4" /><span className="ml-1 text-xs">Sim</span>
+                          </Button>
+                          <Button size="sm" variant="ghost" disabled={busy || j.ai_report_status !== "ready"} onClick={() => handleDownload(j, "ai")} title="AI Writing PDF">
+                            <Download className="h-4 w-4" /><span className="ml-1 text-xs">AI</span>
+                          </Button>
+                        </>
+                      )}
+                      {j.status === "completed" && j.pipeline !== "instructor" && (
                         <Button size="sm" variant="ghost" disabled={busy} onClick={() => handleDownload(j)}>
                           <Download className="h-4 w-4" />
                         </Button>
