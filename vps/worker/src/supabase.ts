@@ -138,6 +138,7 @@ export async function uploadReport(userId: string, jobId: string, pdf: Buffer): 
     file_name: `${jobId}.pdf`,
     mime_type: "application/pdf",
     size_bytes: pdf.length,
+    kind: "similarity",
   });
   if (ins) throw ins;
   return path;

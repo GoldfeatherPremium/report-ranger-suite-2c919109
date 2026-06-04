@@ -188,6 +188,7 @@ export async function markJobFailed(
       status: "failed",
       finished_at: new Date().toISOString(),
       error,
+      ai_report_status: "failed",
     }).eq("id", jobId);
     await supabase.from("turnitin_instructor_slot_usage")
       .update({ freed_at: new Date().toISOString() })
