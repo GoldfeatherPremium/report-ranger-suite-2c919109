@@ -1,5 +1,5 @@
 import { Link, useRouterState } from "@tanstack/react-router";
-import { LayoutDashboard, History, Users, Briefcase, Settings, LogOut, ShieldCheck, FileStack, KeyRound } from "lucide-react";
+import { LayoutDashboard, History, Users, Briefcase, Settings, LogOut, ShieldCheck, FileStack, KeyRound, Plug } from "lucide-react";
 import {
   Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent,
   SidebarGroupLabel, SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem,
@@ -17,6 +17,7 @@ const adminItems = [
   { title: "Users", url: "/admin/users", icon: Users },
   { title: "All Jobs", url: "/admin/jobs", icon: Briefcase },
   { title: "Turnitin", url: "/admin/turnitin", icon: KeyRound },
+  { title: "API Clients", url: "/admin/api-clients", icon: Plug },
   { title: "Portal Configs", url: "/admin/portals", icon: Settings },
   { title: "VPS Credentials", url: "/admin/settings", icon: KeyRound },
 ];
