@@ -61,7 +61,7 @@ async function processOne(): Promise<boolean> {
       await touchJob(job.id);
 
       try {
-        const { pdf, submissionId } = await submitToTurnitin({
+        const { pdf, submissionId, similarityPercent } = await submitToTurnitin({
           slot, fileBytes, originalName: job.original_name,
           headless: HEADLESS,
           submissionTimeoutMs: SUBMISSION_TIMEOUT_MS,
@@ -77,8 +77,8 @@ async function processOne(): Promise<boolean> {
         });
 
         await uploadReport(job.user_id, job.id, pdf);
-        await markJobDone(job.id, submissionId ?? currentSubmissionId);
-        await log(WORKER_ID, job.id, "info", "done");
+        await markJobDone(job.id, submissionId ?? currentSubmissionId, similarityPercent);
+        await log(WORKER_ID, job.id, "info", `done (similarity=${similarityPercent ?? "n/a"}%)`);
         return true;
 
       } catch (err) {
