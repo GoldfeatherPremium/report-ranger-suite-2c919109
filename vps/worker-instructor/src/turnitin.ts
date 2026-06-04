@@ -296,8 +296,7 @@ export async function submitToTurnitin(opts: {
     if (usedCachedSession) {
       const targetUrl = assignment.submit_url ?? assignment.login_url;
       await onProgress(`cached session for ${assignment.account_label} — navigating to ${targetUrl}`);
-      await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
-      await page.waitForLoadState("load", { timeout: 60_000 }).catch(() => {});
+      await gotoAssignmentPage(page, targetUrl, onProgress);
       if (await locateInAnyFrame(page, SEL.emailInput)) {
         await onProgress("cached session expired — re-logging in");
         sessionCache.delete(assignment.account_id);
@@ -336,8 +335,10 @@ export async function submitToTurnitin(opts: {
       sessionCache.set(assignment.account_id, await ctx.storageState());
 
       if (assignment.submit_url) {
-        await page.goto(assignment.submit_url, { waitUntil: "domcontentloaded", timeout: 60_000 });
-        await page.waitForLoadState("load", { timeout: 60_000 }).catch(() => {});
+        await onProgress(`navigating to assignment page: ${assignment.submit_url}`);
+        await gotoAssignmentPage(page, assignment.submit_url, onProgress);
+      } else {
+        await onProgress("[warn] no submit_url configured for this assignment — cannot open the assignment page. Set the Assignment URL in admin.");
       }
     }
 
@@ -860,6 +861,36 @@ async function clickMenuOption(viewer: Page, selector: string, intent: string, o
 }
 
 // ── Shared helpers ─────────────────────────────────────────────────────────────
+
+// Navigate to the assignment submit_url and wait for the SPA to actually render.
+// The Turnitin assignment page is a slow client-rendered SPA that can take
+// 1–15s to paint the student submission table after the document loads, so
+// `domcontentloaded`/`load` alone fire too early. We additionally wait for
+// network to settle and for the submission table (or the ⋮ More button) to
+// appear, with a hard cap so a quiet page still proceeds.
+async function gotoAssignmentPage(page: Page, url: string, onProgress: Logger): Promise<void> {
+  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60_000 });
+  await page.waitForLoadState("load", { timeout: 60_000 }).catch(() => {});
+  await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
+
+  // Wait up to 20s for the student table / ⋮ controls to render.
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    const ready =
+      (await locateInAnyFrame(page, SEL.moreDotsButton)) !== null ||
+      (await locateInAnyFrame(page, SEL.submitFileMenuItem)) !== null ||
+      (await locateInAnyFrame(page, SEL.resubmitMenuItem)) !== null ||
+      (await page.locator("table tbody tr, [role=row]").count().catch(() => 0)) > 1;
+    if (ready) {
+      await onProgress(`assignment page ready: ${page.url().slice(0, 90)}`);
+      return;
+    }
+    // If we got bounced back to a login form, stop waiting — caller handles it.
+    if (await locateInAnyFrame(page, SEL.emailInput)) return;
+    await page.waitForTimeout(1_000);
+  }
+  await onProgress(`assignment page settle timeout (continuing anyway): ${page.url().slice(0, 90)}`);
+}
 
 async function locateInAnyFrame(page: Page, selector: string): Promise<Frame | null> {
   for (const f of page.frames()) {
