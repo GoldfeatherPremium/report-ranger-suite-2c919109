@@ -23,8 +23,15 @@ const SEL = {
   passwordInput: 'input[name="password"], input[name="user_password"], input#password, input#user_password, input[type="password"]',
   loginButton: 'button[type="submit"], input[type="submit"], button:has-text("Log in"), input[value="Log in"], input[value="Login"], #login',
 
-  // ⋮ "More" button on each student row
+  // ⋮ "More actions" button on each student row.
+  // The real Turnitin control is <button class="options-dropdown"
+  // aria-haspopup="true">More actions</button> — a Stencil component whose
+  // accessible name comes from its text content, NOT an aria-label, so the
+  // class / aria-haspopup / text selectors below are what actually match it.
   moreDotsButton: [
+    'button.options-dropdown',
+    'button[aria-haspopup="true"]',
+    'button:has-text("More actions")',
     '[aria-label="More"]',
     '[aria-label*="more options" i]',
     '[aria-label*="more actions" i]',
@@ -35,13 +42,22 @@ const SEL = {
     'button.more-actions',
   ].join(", "),
 
-  // "Submit file" dropdown item (empty rows)
+  // "Submit file" dropdown item (empty rows).
+  // Stencil menu items render as <tii-grn-dropdown-menu-item-alpha
+  // title="Submit file"> with the visible label in shadow DOM — but the host
+  // carries the label as a `title` attribute in the light DOM, so an exact
+  // attribute selector is the most reliable match. Exact (not substring)
+  // matching is required because "Submit file" is a substring of "Resubmit
+  // file"; :text-is() is used for the same reason on the text fallbacks.
   submitFileMenuItem: [
-    'a:has-text("Submit file")',
-    'button:has-text("Submit file")',
-    'li:has-text("Submit file")',
-    '[role="menuitem"]:has-text("Submit file")',
-    'span:has-text("Submit file")',
+    'tii-grn-dropdown-menu-item-alpha[title="Submit file" i]',
+    '[role="menuitem"][title="Submit file" i]',
+    '[title="Submit file" i]',
+    'a:text-is("Submit file")',
+    'button:text-is("Submit file")',
+    'li:text-is("Submit file")',
+    '[role="menuitem"]:text-is("Submit file")',
+    'span:text-is("Submit file")',
   ].join(", "),
 
   // File attachment
@@ -101,13 +117,17 @@ const SEL = {
     '.notification-close',
   ].join(", "),
 
-  // "Resubmit file" dropdown item (used rows); dialog has Confirm button
+  // "Resubmit file" dropdown item (used rows); dialog has Confirm button.
+  // Same Stencil host-title shape as submitFileMenuItem above.
   resubmitMenuItem: [
-    'a:has-text("Resubmit file")',
-    'button:has-text("Resubmit file")',
-    'li:has-text("Resubmit file")',
-    '[role="menuitem"]:has-text("Resubmit file")',
-    'span:has-text("Resubmit file")',
+    'tii-grn-dropdown-menu-item-alpha[title="Resubmit file" i]',
+    '[role="menuitem"][title="Resubmit file" i]',
+    '[title="Resubmit file" i]',
+    'a:text-is("Resubmit file")',
+    'button:text-is("Resubmit file")',
+    'li:text-is("Resubmit file")',
+    '[role="menuitem"]:text-is("Resubmit file")',
+    'span:text-is("Resubmit file")',
   ].join(", "),
   confirmResubmission: 'button:has-text("Confirm"), input[value="Confirm"], a:has-text("Confirm")',
   resubmitDenied: [
@@ -356,41 +376,53 @@ export async function submitToTurnitin(opts: {
     let submitFileOpened = false;
     {
       const step1Deadline = Date.now() + 90_000;
-      while (Date.now() < step1Deadline && !submitFileOpened) {
-        const allDots = await page.locator(SEL.moreDotsButton).all().catch(() => [] as Locator[]);
+      await scrollTableIntoView(page);
 
-        if (allDots.length === 0) {
-          const ai = await findElementWithAI(page, "the three-dot (⋮) More button in the student submission table row");
+      while (Date.now() < step1Deadline && !submitFileOpened) {
+        // Collect ⋮ "More actions" buttons as page-relative click points.
+        const dotBoxes = await collectMoreDotsBoxes(page);
+
+        // AI fallback when the selectors miss every ⋮ button.
+        if (dotBoxes.length === 0) {
+          const ai = await findElementWithAI(page, "the three-dot (⋮) More actions button in a student submission table row");
           if (ai) {
-            await tryClickInAnyFrame(page, ai.selector, 5_000);
-            await page.waitForTimeout(800);
-            if ((await locateInAnyFrame(page, SEL.submitFileMenuItem)) !== null) {
-              await smartClick(page, SEL.submitFileMenuItem, "the Submit file dropdown item", onProgress, 5_000);
-              submitFileOpened = true;
-            } else {
-              await page.keyboard.press("Escape");
-            }
+            const fr = await locateInAnyFrame(page, ai.selector);
+            const b  = fr ? await fr.locator(ai.selector).first().boundingBox().catch(() => null) : null;
+            if (b) dotBoxes.push({ x: b.x + b.width / 2, y: b.y + b.height / 2 });
           }
+        }
+
+        if (dotBoxes.length === 0) {
+          await onProgress("step1: no ⋮ buttons found yet — scrolling and waiting");
+          await scrollTableIntoView(page);
           await page.waitForTimeout(1_500);
           continue;
         }
 
-        for (const dotBtn of allDots) {
+        for (const dot of dotBoxes) {
           if (submitFileOpened) break;
           try {
-            const box = await dotBtn.boundingBox().catch(() => null);
-            if (!box) continue;
-            await page.mouse.move(Math.round(box.x + box.width / 2), Math.round(box.y + box.height / 2));
-            await page.waitForTimeout(200);
-            await page.mouse.click(Math.round(box.x + box.width / 2), Math.round(box.y + box.height / 2));
-            await page.waitForTimeout(800);
+            // Open this row's dropdown with a real mouse click.
+            await page.mouse.move(Math.round(dot.x), Math.round(dot.y));
+            await page.waitForTimeout(150);
+            await page.mouse.click(Math.round(dot.x), Math.round(dot.y));
+            await page.waitForTimeout(700);
 
-            const hasSubmitFile = (await locateInAnyFrame(page, SEL.submitFileMenuItem))   !== null;
-            const hasResubmit   = (await locateInAnyFrame(page, SEL.resubmitMenuItem))     !== null;
+            // Read the open dropdown's item labels (title attr / shadow text).
+            const labels = await readDropdownItemLabels(page);
+            let hasSubmitFile = dropdownHas(labels, SUBMIT_FILE_RE);
+            let hasResubmit   = dropdownHas(labels, RESUBMIT_RE);
+            // Fall back to selector-based detection if the DOM scan found nothing.
+            if (!hasSubmitFile && !hasResubmit) {
+              hasSubmitFile = (await locateInAnyFrame(page, SEL.submitFileMenuItem)) !== null;
+              hasResubmit   = (await locateInAnyFrame(page, SEL.resubmitMenuItem))   !== null;
+            }
+            await onProgress(`step1: dropdown items = [${labels.join(" | ") || "none"}] (submit=${hasSubmitFile} resubmit=${hasResubmit})`);
 
             if (hasSubmitFile) {
               await onProgress("step1: empty row found — clicking 'Submit file'");
-              await smartClick(page, SEL.submitFileMenuItem, "the Submit file dropdown item", onProgress, 5_000);
+              if (!(await clickItemBySelector(page, SEL.submitFileMenuItem)))
+                await smartClick(page, SEL.submitFileMenuItem, "the Submit file dropdown item", onProgress, 5_000);
               submitFileOpened = true;
             } else if (hasResubmit) {
               await onProgress("step1: used row — clicking 'Resubmit file'");
@@ -398,7 +430,8 @@ export async function submitToTurnitin(opts: {
                 await page.keyboard.press("Escape");
                 await page.waitForTimeout(400);
               } else {
-                await smartClick(page, SEL.resubmitMenuItem, "the Resubmit file dropdown item", onProgress, 5_000);
+                if (!(await clickItemBySelector(page, SEL.resubmitMenuItem)))
+                  await smartClick(page, SEL.resubmitMenuItem, "the Resubmit file dropdown item", onProgress, 5_000);
                 await page.waitForTimeout(600);
                 await onProgress("step1: confirming resubmit dialog");
                 await smartClick(page, SEL.confirmResubmission, "the Confirm button in the Resubmit file dialog", onProgress, 10_000);
@@ -407,12 +440,19 @@ export async function submitToTurnitin(opts: {
                 submitFileOpened = true;
               }
             } else {
+              // Not a submission menu — close it and try the next row.
               await page.keyboard.press("Escape");
               await page.waitForTimeout(300);
             }
-          } catch { /* try next row */ }
+          } catch (err) {
+            if (err instanceof ResubmitDeniedError) throw err; // propagate to caller
+            /* otherwise try next row */
+          }
         }
-        if (!submitFileOpened) await page.waitForTimeout(1_000);
+        if (!submitFileOpened) {
+          await scrollTableIntoView(page);
+          await page.waitForTimeout(1_000);
+        }
       }
 
       if (!submitFileOpened) {
@@ -897,6 +937,108 @@ async function locateInAnyFrame(page: Page, selector: string): Promise<Frame | n
     if ((await f.locator(selector).count().catch(() => 0)) > 0) return f;
   }
   return null;
+}
+
+// ── Stencil dropdown helpers ────────────────────────────────────────────────────
+// Turnitin's instructor table uses Stencil.js web components. The ⋮ menu items
+// (<tii-grn-dropdown-menu-item-alpha>) keep their visible label inside a closed-
+// looking shadow root (<div class="button-label">…</div>), so plain :has-text
+// selectors and textContent miss them. The host element, however, exposes the
+// same label as a `title` attribute in the light DOM — which is what we read.
+
+// "Submit file" must NOT match "Resubmit file", hence the anchored regexes.
+const SUBMIT_FILE_RE = /^\s*submit file\b/i;
+const RESUBMIT_RE    = /^\s*resubmit\b/i;
+
+// Read the labels of every rendered item in any open dropdown, across all frames.
+// Reads `title` first, then shadowRoot text, then light-DOM text.
+async function readDropdownItemLabels(page: Page): Promise<string[]> {
+  const labels: string[] = [];
+  for (const frame of page.frames()) {
+    const found = await frame.evaluate(() => {
+      const SEL = [
+        "tii-grn-dropdown-menu-item-alpha",
+        "[role=menuitem]",
+        "[role=option]",
+        ".tii-grn-dropdown-menu-item",
+        "li.dropdown-item",
+      ].join(",");
+      const out: string[] = [];
+      for (const el of Array.from(document.querySelectorAll(SEL))) {
+        const he = el as HTMLElement;
+        const rect = he.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) continue; // not rendered
+        const label = (
+          he.getAttribute("title") ||
+          he.shadowRoot?.textContent ||
+          he.textContent ||
+          ""
+        ).trim();
+        if (label) out.push(label);
+      }
+      return out;
+    }).catch(() => [] as string[]);
+    labels.push(...found);
+  }
+  return labels;
+}
+
+function dropdownHas(labels: string[], re: RegExp): boolean {
+  return labels.some((l) => re.test(l));
+}
+
+// Collect page-relative click points for every ⋮ "More actions" button, across
+// all frames. locator.boundingBox() is already relative to the main frame, so no
+// iframe-offset math is needed here.
+async function collectMoreDotsBoxes(page: Page): Promise<{ x: number; y: number }[]> {
+  const boxes: { x: number; y: number }[] = [];
+  for (const frame of page.frames()) {
+    const locs = await frame.locator(SEL.moreDotsButton).all().catch(() => [] as Locator[]);
+    for (const loc of locs) {
+      const b = await loc.boundingBox().catch(() => null);
+      if (b && b.width > 0 && b.height > 0) {
+        boxes.push({ x: b.x + b.width / 2, y: b.y + b.height / 2 });
+      }
+    }
+  }
+  return boxes;
+}
+
+// Click a dropdown item matched by `selector` using a real mouse click at the
+// element's centre (page-relative coords), falling back to Playwright's click.
+async function clickItemBySelector(page: Page, selector: string): Promise<boolean> {
+  for (const frame of page.frames()) {
+    const loc = frame.locator(selector).first();
+    if ((await loc.count().catch(() => 0)) === 0) continue;
+    const box = await loc.boundingBox().catch(() => null);
+    if (box) {
+      const cx = Math.round(box.x + box.width / 2);
+      const cy = Math.round(box.y + box.height / 2);
+      await page.mouse.move(cx, cy);
+      await page.waitForTimeout(150);
+      await page.mouse.click(cx, cy);
+      return true;
+    }
+    try { await loc.click({ timeout: 3_000 }); return true; } catch { /* try next frame */ }
+  }
+  return false;
+}
+
+// The student submission table is lazy/virtualised and usually below the fold —
+// scroll the window (and any inner scroll container) so its rows actually render.
+async function scrollTableIntoView(page: Page): Promise<void> {
+  for (let i = 0; i < 6; i++) {
+    await page.evaluate(() => {
+      window.scrollBy(0, window.innerHeight);
+      for (const s of Array.from(
+        document.querySelectorAll('[class*="scroll"], tbody, .table-body, [role="rowgroup"]'),
+      )) {
+        (s as HTMLElement).scrollTop = (s as HTMLElement).scrollHeight;
+      }
+    }).catch(() => {});
+    await page.waitForTimeout(350);
+  }
+  await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
 }
 
 async function fillInAnyFrame(page: Page, selector: string, value: string, timeoutMs: number): Promise<boolean> {
