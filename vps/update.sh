@@ -1,111 +1,187 @@
 #!/usr/bin/env bash
-# update.sh — pull latest code from git and redeploy both workers.
-# Survives SSH disconnects: call with --background to run detached.
+# update.sh — pull latest code and redeploy both workers.
 #
 # Usage:
-#   bash update.sh                  # run in foreground (attach to terminal)
-#   bash update.sh --background     # run in background, tail /var/log/worker-update.log
+#   sudo bash update.sh                          # normal update
+#   sudo bash update.sh --force                  # rebuild even if already up to date
+#   sudo bash update.sh --background             # detach; tail /var/log/worker-update.log
+#   sudo bash update.sh --student-only           # only rebuild/restart student worker
+#   sudo bash update.sh --instructor-only        # only rebuild/restart instructor worker
+#
+# Env vars:
+#   WORKER_BRANCH=main   git branch to deploy (default: main)
 
 set -euo pipefail
 
+# ── root check ────────────────────────────────────────────────────────────────
+if [[ "$EUID" -ne 0 ]]; then
+  echo "Run as root: sudo bash update.sh $*"
+  exit 1
+fi
+
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 WORKER_DIR="$REPO_DIR/vps/worker"
-INSTRUCTOR_WORKER_DIR="$REPO_DIR/vps/worker-instructor"
+INSTRUCTOR_DIR="$REPO_DIR/vps/worker-instructor"
 BRANCH="${WORKER_BRANCH:-main}"
 LOG="/var/log/worker-update.log"
 
-# ── background mode: re-exec with nohup and exit ─────────────────────────────
-if [[ "${1:-}" == "--background" ]]; then
-  nohup bash "$0" > "$LOG" 2>&1 &
+FORCE=0
+STUDENT_ONLY=0
+INSTRUCTOR_ONLY=0
+BG=0
+
+for arg in "$@"; do
+  case "$arg" in
+    --force)          FORCE=1 ;;
+    --student-only)   STUDENT_ONLY=1 ;;
+    --instructor-only) INSTRUCTOR_ONLY=1 ;;
+    --background)     BG=1 ;;
+  esac
+done
+
+# ── background mode ───────────────────────────────────────────────────────────
+if [[ "$BG" -eq 1 ]]; then
+  EXTRA=""
+  [[ "$FORCE" -eq 1 ]] && EXTRA+=" --force"
+  [[ "$STUDENT_ONLY" -eq 1 ]] && EXTRA+=" --student-only"
+  [[ "$INSTRUCTOR_ONLY" -eq 1 ]] && EXTRA+=" --instructor-only"
+  # shellcheck disable=SC2086
+  nohup bash "$0" $EXTRA > "$LOG" 2>&1 &
   BG_PID=$!
   echo "Running in background (PID $BG_PID)"
-  echo "Watch progress:  tail -f $LOG"
-  echo "Check status:    systemctl status turnitin-worker turnitin-instructor-worker --no-pager"
+  echo "Watch: tail -f $LOG"
+  echo "Status: systemctl status turnitin-worker turnitin-instructor-worker --no-pager"
   exit 0
 fi
 
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
 
-# ── 1. pull ───────────────────────────────────────────────────────────────────
-log "Fetching $BRANCH"
+separator() { echo "────────────────────────────────────────────────────────────"; }
+
+# ── 1. git pull ───────────────────────────────────────────────────────────────
+separator
+log "Branch: $BRANCH"
 cd "$REPO_DIR"
 git fetch origin "$BRANCH"
 
 LOCAL="$(git rev-parse HEAD)"
 REMOTE="$(git rev-parse "origin/$BRANCH")"
 
-if [[ "$LOCAL" == "$REMOTE" ]]; then
-  log "Already up to date ($LOCAL) — nothing to do"
+if [[ "$LOCAL" == "$REMOTE" && "$FORCE" -eq 0 ]]; then
+  log "Already up to date ($LOCAL)"
+  log "Pass --force to rebuild anyway"
+  # Still show current service statuses before exiting
+  echo ""
+  show_status() {
+    local svc="$1"
+    if systemctl is-enabled "$svc" --quiet 2>/dev/null; then
+      local state; state="$(systemctl is-active "$svc" 2>/dev/null || true)"
+      log "  $svc: $state"
+    fi
+  }
+  log "Current service statuses:"
+  show_status turnitin-worker
+  show_status turnitin-instructor-worker
   exit 0
 fi
 
-log "Updating $LOCAL -> $REMOTE"
-git checkout "$BRANCH"
-git reset --hard "origin/$BRANCH"
-
-# ── 2. student worker ─────────────────────────────────────────────────────────
-log "Installing student worker npm deps"
-cd "$WORKER_DIR"
-npm install
-
-log "Building student worker"
-npm run build
-
-log "Pruning student worker dev deps"
-npm prune --omit=dev
-
-log "Refreshing systemd unit (student)"
-sed "s|__WORKER_DIR__|$WORKER_DIR|g" \
-  "$REPO_DIR/vps/turnitin-worker.service" \
-  > /etc/systemd/system/turnitin-worker.service
-systemctl daemon-reload
-systemctl enable turnitin-worker --quiet
-
-log "Restarting turnitin-worker"
-systemctl reset-failed turnitin-worker 2>/dev/null || true
-systemctl restart turnitin-worker
-sleep 2
-
-STATUS="$(systemctl is-active turnitin-worker)"
-if [[ "$STATUS" == "active" ]]; then
-  log "Student worker is running (active)"
+if [[ "$LOCAL" != "$REMOTE" ]]; then
+  log "New commits:"
+  git log --oneline "HEAD..origin/$BRANCH" | sed 's/^/    /'
+  log "Deploying $LOCAL -> $REMOTE"
+  git checkout "$BRANCH"
+  git reset --hard "origin/$BRANCH"
 else
-  log "WARNING: student worker status is '$STATUS' — check: journalctl -u turnitin-worker -n 40 --no-pager"
+  log "Force rebuild at $LOCAL"
 fi
 
-# ── 3. instructor worker (only if .env exists) ────────────────────────────────
-if [[ -f "$INSTRUCTOR_WORKER_DIR/.env" ]]; then
-  log "Installing instructor worker npm deps"
-  cd "$INSTRUCTOR_WORKER_DIR"
-  npm install
+# ── helpers ───────────────────────────────────────────────────────────────────
+build_worker() {
+  local dir="$1"
+  local name="$2"
 
-  log "Building instructor worker"
+  log "[$name] npm install"
+  cd "$dir"
+  npm install --prefer-offline 2>&1 | tail -3
+
+  log "[$name] build"
   npm run build
 
-  log "Pruning instructor worker dev deps"
-  npm prune --omit=dev
+  log "[$name] prune dev deps"
+  npm prune --omit=dev 2>&1 | tail -2
+}
 
-  log "Refreshing systemd unit (instructor)"
-  sed "s|__WORKER_DIR__|$INSTRUCTOR_WORKER_DIR|g" \
-    "$REPO_DIR/vps/turnitin-instructor-worker.service" \
-    > /etc/systemd/system/turnitin-instructor-worker.service
+install_unit() {
+  local template="$1"    # path to *.service template in repo
+  local unit_name="$2"   # e.g. turnitin-worker
+  local worker_dir="$3"
+
+  local dest="/etc/systemd/system/${unit_name}.service"
+  sed "s|__WORKER_DIR__|${worker_dir}|g" "$template" > "$dest"
   systemctl daemon-reload
-  systemctl enable turnitin-instructor-worker --quiet
+  systemctl enable "$unit_name" --quiet
+  log "[$unit_name] systemd unit refreshed"
+}
 
-  log "Restarting turnitin-instructor-worker"
-  systemctl reset-failed turnitin-instructor-worker 2>/dev/null || true
-  systemctl restart turnitin-instructor-worker
-  sleep 2
+restart_and_check() {
+  local unit_name="$1"
 
-  INSTR_STATUS="$(systemctl is-active turnitin-instructor-worker)"
-  if [[ "$INSTR_STATUS" == "active" ]]; then
-    log "Instructor worker is running (active)"
+  systemctl reset-failed "$unit_name" 2>/dev/null || true
+  systemctl restart "$unit_name"
+  sleep 3
+
+  local state; state="$(systemctl is-active "$unit_name" 2>/dev/null || true)"
+  if [[ "$state" == "active" ]]; then
+    log "[$unit_name] running (active) ✓"
   else
-    log "WARNING: instructor worker status is '$INSTR_STATUS' — check: journalctl -u turnitin-instructor-worker -n 40 --no-pager"
+    log "[$unit_name] WARNING: status='$state'"
+    log "[$unit_name] Debug: journalctl -u $unit_name -n 50 --no-pager"
   fi
-else
-  log "(Skipping instructor worker — $INSTRUCTOR_WORKER_DIR/.env not found)"
-  log "  To enable: cp $INSTRUCTOR_WORKER_DIR/.env.example $INSTRUCTOR_WORKER_DIR/.env && nano $INSTRUCTOR_WORKER_DIR/.env && bash $0"
+}
+
+# ── 2. student worker ─────────────────────────────────────────────────────────
+if [[ "$INSTRUCTOR_ONLY" -eq 0 ]]; then
+  separator
+  log "Rebuilding student worker"
+  build_worker "$WORKER_DIR" "student"
+  install_unit "$REPO_DIR/vps/turnitin-worker.service" \
+               "turnitin-worker" \
+               "$WORKER_DIR"
+  restart_and_check "turnitin-worker"
 fi
 
-log "Done. Deployed $REMOTE"
+# ── 3. instructor worker ──────────────────────────────────────────────────────
+if [[ "$STUDENT_ONLY" -eq 0 ]]; then
+  separator
+  if [[ -f "$INSTRUCTOR_DIR/.env" ]]; then
+    log "Rebuilding instructor worker"
+    build_worker "$INSTRUCTOR_DIR" "instructor"
+    install_unit "$REPO_DIR/vps/turnitin-instructor-worker.service" \
+                 "turnitin-instructor-worker" \
+                 "$INSTRUCTOR_DIR"
+    restart_and_check "turnitin-instructor-worker"
+  else
+    log "[instructor] skipped — $INSTRUCTOR_DIR/.env not found"
+    log "[instructor] To enable:"
+    log "             cp $INSTRUCTOR_DIR/.env.example $INSTRUCTOR_DIR/.env"
+    log "             nano $INSTRUCTOR_DIR/.env"
+    log "             sudo bash $0 --instructor-only"
+  fi
+fi
+
+# ── 4. final summary ──────────────────────────────────────────────────────────
+separator
+log "Deployed: $(git rev-parse --short HEAD)"
+echo ""
+log "Service statuses:"
+for svc in turnitin-worker turnitin-instructor-worker; do
+  if systemctl is-enabled "$svc" --quiet 2>/dev/null; then
+    state="$(systemctl is-active "$svc" 2>/dev/null || true)"
+    active_jobs="$(journalctl -u "$svc" -n 5 --no-pager -o cat 2>/dev/null | grep -oP 'activeJobs=\K\d+' | tail -1 || true)"
+    log "  $svc  →  $state${active_jobs:+  (active jobs: $active_jobs)}"
+  fi
+done
+echo ""
+log "Live logs:"
+log "  Student:    journalctl -u turnitin-worker -f --no-pager"
+log "  Instructor: journalctl -u turnitin-instructor-worker -f --no-pager"
