@@ -69,6 +69,9 @@ export async function uploadAndCreateJob(
     queued_at: new Date().toISOString(),
     max_attempts: 5,
     pipeline,
+    slot_id: null,
+    instructor_assignment_id: null,
+    ai_report_status: pipeline === "instructor" ? "pending" : null,
   });
   if (insErr) {
     await supabase.storage.from("documents").remove([key]);
@@ -94,19 +97,6 @@ export async function downloadReport(
     download: report.file_name,
   });
   return data?.signedUrl ?? null;
-}
-
-export async function retryJob(id: string) {
-  // RPC (security definer): requeues as a fresh upload, clears the stale
-  // slot/submission so the worker doesn't mistake it for a resume, and frees
-  // the prior slot-usage row (the client cannot touch that table under RLS).
-  return supabase.rpc("retry_job" as never, { p_job_id: id } as never);
-}
-
-export async function cancelJob(id: string) {
-  // RPC (security definer): marks cancelled and frees the slot when no document
-  // was submitted, so a cancelled job doesn't leak a Turnitin slot for 24h.
-  return supabase.rpc("cancel_job" as never, { p_job_id: id } as never);
 }
 
 export async function deleteJob(id: string, sourcePath: string) {

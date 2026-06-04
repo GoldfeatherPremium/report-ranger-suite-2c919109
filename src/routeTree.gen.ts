@@ -15,6 +15,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthenticatedHistoryRouteImport } from './routes/_authenticated/history'
 import { Route as AuthenticatedDashboardRouteImport } from './routes/_authenticated/dashboard'
 import { Route as AuthenticatedDashboardAiRouteImport } from './routes/_authenticated/dashboard.ai'
+import { Route as AuthenticatedDashboardIndexRouteImport } from './routes/_authenticated/dashboard.index'
 import { Route as AuthenticatedAdminRouteImport } from './routes/_authenticated/admin'
 import { Route as AuthenticatedAdminIndexRouteImport } from './routes/_authenticated/admin.index'
 import { Route as AuthenticatedAdminUsersRouteImport } from './routes/_authenticated/admin.users'
@@ -58,11 +59,18 @@ const AuthenticatedDashboardRoute = AuthenticatedDashboardRouteImport.update({
   path: '/dashboard',
   getParentRoute: () => AuthenticatedRoute,
 } as any)
-const AuthenticatedDashboardAiRoute = AuthenticatedDashboardAiRouteImport.update({
-  id: '/dashboard/ai',
-  path: '/dashboard/ai',
-  getParentRoute: () => AuthenticatedRoute,
-} as any)
+const AuthenticatedDashboardIndexRoute =
+  AuthenticatedDashboardIndexRouteImport.update({
+    id: '/',
+    path: '/',
+    getParentRoute: () => AuthenticatedDashboardRoute,
+  } as any)
+const AuthenticatedDashboardAiRoute =
+  AuthenticatedDashboardAiRouteImport.update({
+    id: '/ai',
+    path: '/ai',
+    getParentRoute: () => AuthenticatedDashboardRoute,
+  } as any)
 const AuthenticatedAdminRoute = AuthenticatedAdminRouteImport.update({
   id: '/admin',
   path: '/admin',
@@ -133,9 +141,9 @@ const AuthenticatedAdminInstructorAccountIdRoute =
   } as any)
 const AuthenticatedAdminInstructorAccountIdClassIdRoute =
   AuthenticatedAdminInstructorAccountIdClassIdRouteImport.update({
-    id: '/$accountId/$classId',
-    path: '/$accountId/$classId',
-    getParentRoute: () => AuthenticatedAdminInstructorRoute,
+    id: '/$classId',
+    path: '/$classId',
+    getParentRoute: () => AuthenticatedAdminInstructorAccountIdRoute,
   } as any)
 const ApiPublicV1JobsRoute = ApiPublicV1JobsRouteImport.update({
   id: '/api/public/v1/jobs',
@@ -170,20 +178,21 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/admin': typeof AuthenticatedAdminRouteWithChildren
-  '/dashboard': typeof AuthenticatedDashboardRoute
-  '/dashboard/ai': typeof AuthenticatedDashboardAiRoute
+  '/dashboard': typeof AuthenticatedDashboardRouteWithChildren
   '/history': typeof AuthenticatedHistoryRoute
   '/admin/api-clients': typeof AuthenticatedAdminApiClientsRoute
+  '/admin/instructor': typeof AuthenticatedAdminInstructorRouteWithChildren
   '/admin/jobs': typeof AuthenticatedAdminJobsRoute
   '/admin/portals': typeof AuthenticatedAdminPortalsRoute
   '/admin/settings': typeof AuthenticatedAdminSettingsRoute
   '/admin/turnitin': typeof AuthenticatedAdminTurnitinRouteWithChildren
   '/admin/users': typeof AuthenticatedAdminUsersRoute
+  '/dashboard/ai': typeof AuthenticatedDashboardAiRoute
   '/admin/': typeof AuthenticatedAdminIndexRoute
+  '/dashboard/': typeof AuthenticatedDashboardIndexRoute
+  '/admin/instructor/$accountId': typeof AuthenticatedAdminInstructorAccountIdRouteWithChildren
   '/admin/turnitin/$accountId': typeof AuthenticatedAdminTurnitinAccountIdRoute
-  '/admin/instructor': typeof AuthenticatedAdminInstructorRouteWithChildren
   '/admin/instructor/': typeof AuthenticatedAdminInstructorIndexRoute
-  '/admin/instructor/$accountId': typeof AuthenticatedAdminInstructorAccountIdRoute
   '/admin/instructor/$accountId/$classId': typeof AuthenticatedAdminInstructorAccountIdClassIdRoute
   '/api/public/cron/dispatch-callbacks': typeof ApiPublicCronDispatchCallbacksRoute
   '/api/public/v1/jobs': typeof ApiPublicV1JobsRouteWithChildren
@@ -194,22 +203,22 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
-  '/dashboard': typeof AuthenticatedDashboardRoute
-  '/dashboard/ai': typeof AuthenticatedDashboardAiRoute
   '/history': typeof AuthenticatedHistoryRoute
   '/admin/api-clients': typeof AuthenticatedAdminApiClientsRoute
   '/admin/jobs': typeof AuthenticatedAdminJobsRoute
   '/admin/portals': typeof AuthenticatedAdminPortalsRoute
   '/admin/settings': typeof AuthenticatedAdminSettingsRoute
   '/admin/users': typeof AuthenticatedAdminUsersRoute
+  '/dashboard/ai': typeof AuthenticatedDashboardAiRoute
   '/admin': typeof AuthenticatedAdminIndexRoute
+  '/dashboard': typeof AuthenticatedDashboardIndexRoute
+  '/admin/instructor/$accountId': typeof AuthenticatedAdminInstructorAccountIdRouteWithChildren
   '/admin/turnitin/$accountId': typeof AuthenticatedAdminTurnitinAccountIdRoute
-  '/admin/instructor/$accountId': typeof AuthenticatedAdminInstructorAccountIdRoute
   '/admin/instructor/$accountId/$classId': typeof AuthenticatedAdminInstructorAccountIdClassIdRoute
   '/api/public/cron/dispatch-callbacks': typeof ApiPublicCronDispatchCallbacksRoute
   '/api/public/v1/jobs': typeof ApiPublicV1JobsRouteWithChildren
-  '/admin/turnitin': typeof AuthenticatedAdminTurnitinIndexRoute
   '/admin/instructor': typeof AuthenticatedAdminInstructorIndexRoute
+  '/admin/turnitin': typeof AuthenticatedAdminTurnitinIndexRoute
   '/api/public/v1/jobs/$jobId': typeof ApiPublicV1JobsJobIdRoute
   '/api/public/v1/jobs/upload-url': typeof ApiPublicV1JobsUploadUrlRoute
 }
@@ -219,20 +228,21 @@ export interface FileRoutesById {
   '/_authenticated': typeof AuthenticatedRouteWithChildren
   '/login': typeof LoginRoute
   '/_authenticated/admin': typeof AuthenticatedAdminRouteWithChildren
-  '/_authenticated/dashboard': typeof AuthenticatedDashboardRoute
-  '/_authenticated/dashboard/ai': typeof AuthenticatedDashboardAiRoute
+  '/_authenticated/dashboard': typeof AuthenticatedDashboardRouteWithChildren
   '/_authenticated/history': typeof AuthenticatedHistoryRoute
   '/_authenticated/admin/api-clients': typeof AuthenticatedAdminApiClientsRoute
+  '/_authenticated/admin/instructor': typeof AuthenticatedAdminInstructorRouteWithChildren
   '/_authenticated/admin/jobs': typeof AuthenticatedAdminJobsRoute
   '/_authenticated/admin/portals': typeof AuthenticatedAdminPortalsRoute
   '/_authenticated/admin/settings': typeof AuthenticatedAdminSettingsRoute
   '/_authenticated/admin/turnitin': typeof AuthenticatedAdminTurnitinRouteWithChildren
   '/_authenticated/admin/users': typeof AuthenticatedAdminUsersRoute
+  '/_authenticated/dashboard/ai': typeof AuthenticatedDashboardAiRoute
   '/_authenticated/admin/': typeof AuthenticatedAdminIndexRoute
+  '/_authenticated/dashboard/': typeof AuthenticatedDashboardIndexRoute
+  '/_authenticated/admin/instructor/$accountId': typeof AuthenticatedAdminInstructorAccountIdRouteWithChildren
   '/_authenticated/admin/turnitin/$accountId': typeof AuthenticatedAdminTurnitinAccountIdRoute
-  '/_authenticated/admin/instructor': typeof AuthenticatedAdminInstructorRouteWithChildren
   '/_authenticated/admin/instructor/': typeof AuthenticatedAdminInstructorIndexRoute
-  '/_authenticated/admin/instructor/$accountId': typeof AuthenticatedAdminInstructorAccountIdRoute
   '/_authenticated/admin/instructor/$accountId/$classId': typeof AuthenticatedAdminInstructorAccountIdClassIdRoute
   '/api/public/cron/dispatch-callbacks': typeof ApiPublicCronDispatchCallbacksRoute
   '/api/public/v1/jobs': typeof ApiPublicV1JobsRouteWithChildren
@@ -247,19 +257,20 @@ export interface FileRouteTypes {
     | '/login'
     | '/admin'
     | '/dashboard'
-    | '/dashboard/ai'
     | '/history'
     | '/admin/api-clients'
+    | '/admin/instructor'
     | '/admin/jobs'
     | '/admin/portals'
     | '/admin/settings'
     | '/admin/turnitin'
     | '/admin/users'
+    | '/dashboard/ai'
     | '/admin/'
-    | '/admin/turnitin/$accountId'
-    | '/admin/instructor'
-    | '/admin/instructor/'
+    | '/dashboard/'
     | '/admin/instructor/$accountId'
+    | '/admin/turnitin/$accountId'
+    | '/admin/instructor/'
     | '/admin/instructor/$accountId/$classId'
     | '/api/public/cron/dispatch-callbacks'
     | '/api/public/v1/jobs'
@@ -270,22 +281,22 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/login'
-    | '/dashboard'
-    | '/dashboard/ai'
     | '/history'
     | '/admin/api-clients'
     | '/admin/jobs'
     | '/admin/portals'
     | '/admin/settings'
     | '/admin/users'
+    | '/dashboard/ai'
     | '/admin'
-    | '/admin/turnitin/$accountId'
+    | '/dashboard'
     | '/admin/instructor/$accountId'
+    | '/admin/turnitin/$accountId'
     | '/admin/instructor/$accountId/$classId'
     | '/api/public/cron/dispatch-callbacks'
     | '/api/public/v1/jobs'
-    | '/admin/turnitin'
     | '/admin/instructor'
+    | '/admin/turnitin'
     | '/api/public/v1/jobs/$jobId'
     | '/api/public/v1/jobs/upload-url'
   id:
@@ -295,19 +306,20 @@ export interface FileRouteTypes {
     | '/login'
     | '/_authenticated/admin'
     | '/_authenticated/dashboard'
-    | '/_authenticated/dashboard/ai'
     | '/_authenticated/history'
     | '/_authenticated/admin/api-clients'
+    | '/_authenticated/admin/instructor'
     | '/_authenticated/admin/jobs'
     | '/_authenticated/admin/portals'
     | '/_authenticated/admin/settings'
     | '/_authenticated/admin/turnitin'
     | '/_authenticated/admin/users'
+    | '/_authenticated/dashboard/ai'
     | '/_authenticated/admin/'
-    | '/_authenticated/admin/turnitin/$accountId'
-    | '/_authenticated/admin/instructor'
-    | '/_authenticated/admin/instructor/'
+    | '/_authenticated/dashboard/'
     | '/_authenticated/admin/instructor/$accountId'
+    | '/_authenticated/admin/turnitin/$accountId'
+    | '/_authenticated/admin/instructor/'
     | '/_authenticated/admin/instructor/$accountId/$classId'
     | '/api/public/cron/dispatch-callbacks'
     | '/api/public/v1/jobs'
@@ -361,12 +373,19 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedDashboardRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
+    '/_authenticated/dashboard/': {
+      id: '/_authenticated/dashboard/'
+      path: '/'
+      fullPath: '/dashboard/'
+      preLoaderRoute: typeof AuthenticatedDashboardIndexRouteImport
+      parentRoute: typeof AuthenticatedDashboardRoute
+    }
     '/_authenticated/dashboard/ai': {
       id: '/_authenticated/dashboard/ai'
-      path: '/dashboard/ai'
+      path: '/ai'
       fullPath: '/dashboard/ai'
       preLoaderRoute: typeof AuthenticatedDashboardAiRouteImport
-      parentRoute: typeof AuthenticatedRoute
+      parentRoute: typeof AuthenticatedDashboardRoute
     }
     '/_authenticated/admin': {
       id: '/_authenticated/admin'
@@ -417,6 +436,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedAdminJobsRouteImport
       parentRoute: typeof AuthenticatedAdminRoute
     }
+    '/_authenticated/admin/instructor': {
+      id: '/_authenticated/admin/instructor'
+      path: '/instructor'
+      fullPath: '/admin/instructor'
+      preLoaderRoute: typeof AuthenticatedAdminInstructorRouteImport
+      parentRoute: typeof AuthenticatedAdminRoute
+    }
     '/_authenticated/admin/api-clients': {
       id: '/_authenticated/admin/api-clients'
       path: '/api-clients'
@@ -430,13 +456,6 @@ declare module '@tanstack/react-router' {
       fullPath: '/admin/turnitin/'
       preLoaderRoute: typeof AuthenticatedAdminTurnitinIndexRouteImport
       parentRoute: typeof AuthenticatedAdminTurnitinRoute
-    }
-    '/_authenticated/admin/instructor': {
-      id: '/_authenticated/admin/instructor'
-      path: '/instructor'
-      fullPath: '/admin/instructor'
-      preLoaderRoute: typeof AuthenticatedAdminInstructorRouteImport
-      parentRoute: typeof AuthenticatedAdminRoute
     }
     '/_authenticated/admin/instructor/': {
       id: '/_authenticated/admin/instructor/'
@@ -454,10 +473,10 @@ declare module '@tanstack/react-router' {
     }
     '/_authenticated/admin/instructor/$accountId/$classId': {
       id: '/_authenticated/admin/instructor/$accountId/$classId'
-      path: '/$accountId/$classId'
+      path: '/$classId'
       fullPath: '/admin/instructor/$accountId/$classId'
       preLoaderRoute: typeof AuthenticatedAdminInstructorAccountIdClassIdRouteImport
-      parentRoute: typeof AuthenticatedAdminInstructorRoute
+      parentRoute: typeof AuthenticatedAdminInstructorAccountIdRoute
     }
     '/api/public/v1/jobs': {
       id: '/api/public/v1/jobs'
@@ -497,6 +516,39 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface AuthenticatedAdminInstructorAccountIdRouteChildren {
+  AuthenticatedAdminInstructorAccountIdClassIdRoute: typeof AuthenticatedAdminInstructorAccountIdClassIdRoute
+}
+
+const AuthenticatedAdminInstructorAccountIdRouteChildren: AuthenticatedAdminInstructorAccountIdRouteChildren =
+  {
+    AuthenticatedAdminInstructorAccountIdClassIdRoute:
+      AuthenticatedAdminInstructorAccountIdClassIdRoute,
+  }
+
+const AuthenticatedAdminInstructorAccountIdRouteWithChildren =
+  AuthenticatedAdminInstructorAccountIdRoute._addFileChildren(
+    AuthenticatedAdminInstructorAccountIdRouteChildren,
+  )
+
+interface AuthenticatedAdminInstructorRouteChildren {
+  AuthenticatedAdminInstructorAccountIdRoute: typeof AuthenticatedAdminInstructorAccountIdRouteWithChildren
+  AuthenticatedAdminInstructorIndexRoute: typeof AuthenticatedAdminInstructorIndexRoute
+}
+
+const AuthenticatedAdminInstructorRouteChildren: AuthenticatedAdminInstructorRouteChildren =
+  {
+    AuthenticatedAdminInstructorAccountIdRoute:
+      AuthenticatedAdminInstructorAccountIdRouteWithChildren,
+    AuthenticatedAdminInstructorIndexRoute:
+      AuthenticatedAdminInstructorIndexRoute,
+  }
+
+const AuthenticatedAdminInstructorRouteWithChildren =
+  AuthenticatedAdminInstructorRoute._addFileChildren(
+    AuthenticatedAdminInstructorRouteChildren,
+  )
+
 interface AuthenticatedAdminTurnitinRouteChildren {
   AuthenticatedAdminTurnitinAccountIdRoute: typeof AuthenticatedAdminTurnitinAccountIdRoute
   AuthenticatedAdminTurnitinIndexRoute: typeof AuthenticatedAdminTurnitinIndexRoute
@@ -514,63 +566,56 @@ const AuthenticatedAdminTurnitinRouteWithChildren =
     AuthenticatedAdminTurnitinRouteChildren,
   )
 
-interface AuthenticatedAdminInstructorRouteChildren {
-  AuthenticatedAdminInstructorIndexRoute: typeof AuthenticatedAdminInstructorIndexRoute
-  AuthenticatedAdminInstructorAccountIdRoute: typeof AuthenticatedAdminInstructorAccountIdRoute
-  AuthenticatedAdminInstructorAccountIdClassIdRoute: typeof AuthenticatedAdminInstructorAccountIdClassIdRoute
-}
-
-const AuthenticatedAdminInstructorRouteChildren: AuthenticatedAdminInstructorRouteChildren =
-  {
-    AuthenticatedAdminInstructorIndexRoute:
-      AuthenticatedAdminInstructorIndexRoute,
-    AuthenticatedAdminInstructorAccountIdRoute:
-      AuthenticatedAdminInstructorAccountIdRoute,
-    AuthenticatedAdminInstructorAccountIdClassIdRoute:
-      AuthenticatedAdminInstructorAccountIdClassIdRoute,
-  }
-
-const AuthenticatedAdminInstructorRouteWithChildren =
-  AuthenticatedAdminInstructorRoute._addFileChildren(
-    AuthenticatedAdminInstructorRouteChildren,
-  )
-
 interface AuthenticatedAdminRouteChildren {
   AuthenticatedAdminApiClientsRoute: typeof AuthenticatedAdminApiClientsRoute
+  AuthenticatedAdminInstructorRoute: typeof AuthenticatedAdminInstructorRouteWithChildren
   AuthenticatedAdminJobsRoute: typeof AuthenticatedAdminJobsRoute
   AuthenticatedAdminPortalsRoute: typeof AuthenticatedAdminPortalsRoute
   AuthenticatedAdminSettingsRoute: typeof AuthenticatedAdminSettingsRoute
   AuthenticatedAdminTurnitinRoute: typeof AuthenticatedAdminTurnitinRouteWithChildren
   AuthenticatedAdminUsersRoute: typeof AuthenticatedAdminUsersRoute
   AuthenticatedAdminIndexRoute: typeof AuthenticatedAdminIndexRoute
-  AuthenticatedAdminInstructorRoute: typeof AuthenticatedAdminInstructorRouteWithChildren
 }
 
 const AuthenticatedAdminRouteChildren: AuthenticatedAdminRouteChildren = {
   AuthenticatedAdminApiClientsRoute: AuthenticatedAdminApiClientsRoute,
+  AuthenticatedAdminInstructorRoute: AuthenticatedAdminInstructorRouteWithChildren,
   AuthenticatedAdminJobsRoute: AuthenticatedAdminJobsRoute,
   AuthenticatedAdminPortalsRoute: AuthenticatedAdminPortalsRoute,
   AuthenticatedAdminSettingsRoute: AuthenticatedAdminSettingsRoute,
   AuthenticatedAdminTurnitinRoute: AuthenticatedAdminTurnitinRouteWithChildren,
   AuthenticatedAdminUsersRoute: AuthenticatedAdminUsersRoute,
   AuthenticatedAdminIndexRoute: AuthenticatedAdminIndexRoute,
-  AuthenticatedAdminInstructorRoute: AuthenticatedAdminInstructorRouteWithChildren,
 }
 
 const AuthenticatedAdminRouteWithChildren =
   AuthenticatedAdminRoute._addFileChildren(AuthenticatedAdminRouteChildren)
 
+interface AuthenticatedDashboardRouteChildren {
+  AuthenticatedDashboardAiRoute: typeof AuthenticatedDashboardAiRoute
+  AuthenticatedDashboardIndexRoute: typeof AuthenticatedDashboardIndexRoute
+}
+
+const AuthenticatedDashboardRouteChildren: AuthenticatedDashboardRouteChildren =
+  {
+    AuthenticatedDashboardAiRoute: AuthenticatedDashboardAiRoute,
+    AuthenticatedDashboardIndexRoute: AuthenticatedDashboardIndexRoute,
+  }
+
+const AuthenticatedDashboardRouteWithChildren =
+  AuthenticatedDashboardRoute._addFileChildren(
+    AuthenticatedDashboardRouteChildren,
+  )
+
 interface AuthenticatedRouteChildren {
   AuthenticatedAdminRoute: typeof AuthenticatedAdminRouteWithChildren
-  AuthenticatedDashboardRoute: typeof AuthenticatedDashboardRoute
-  AuthenticatedDashboardAiRoute: typeof AuthenticatedDashboardAiRoute
+  AuthenticatedDashboardRoute: typeof AuthenticatedDashboardRouteWithChildren
   AuthenticatedHistoryRoute: typeof AuthenticatedHistoryRoute
 }
 
 const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
   AuthenticatedAdminRoute: AuthenticatedAdminRouteWithChildren,
-  AuthenticatedDashboardRoute: AuthenticatedDashboardRoute,
-  AuthenticatedDashboardAiRoute: AuthenticatedDashboardAiRoute,
+  AuthenticatedDashboardRoute: AuthenticatedDashboardRouteWithChildren,
   AuthenticatedHistoryRoute: AuthenticatedHistoryRoute,
 }
 

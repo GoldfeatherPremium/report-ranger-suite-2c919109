@@ -142,14 +142,14 @@ export async function uploadReport(
     upsert: true,
   });
   if (error) throw error;
-  const { error: ins } = await supabase.from("reports").insert({
+  const { error: ins } = await supabase.from("reports").upsert({
     job_id: jobId,
     storage_path: path,
     file_name: `${jobId}.${kind}.pdf`,
     mime_type: "application/pdf",
     size_bytes: pdf.length,
     kind,
-  });
+  }, { onConflict: "job_id,kind" });
   if (ins) throw ins;
   return path;
 }
@@ -175,6 +175,7 @@ export async function markJobDone(jobId: string, submissionId: string | null) {
   await supabase.from("turnitin_instructor_slot_usage")
     .update({ freed_at: new Date().toISOString(), turnitin_submission_id: submissionId })
     .eq("job_id", jobId).is("freed_at", null);
+  await supabase.rpc("enqueue_job_callback", { p_job_id: jobId, p_event: "job.completed" });
 }
 
 export async function markJobFailed(
@@ -187,10 +188,12 @@ export async function markJobFailed(
       status: "failed",
       finished_at: new Date().toISOString(),
       error,
+      ai_report_status: "failed",
     }).eq("id", jobId);
     await supabase.from("turnitin_instructor_slot_usage")
       .update({ freed_at: new Date().toISOString() })
       .eq("job_id", jobId).is("freed_at", null);
+    await supabase.rpc("enqueue_job_callback", { p_job_id: jobId, p_event: "job.failed" });
   } else if (alreadySubmitted) {
     const retryAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
     await supabase.from("jobs").update({

@@ -12,6 +12,15 @@ const CreateSchema = z.object({
   callback_url: z.string().url().max(2048).optional(),
   mime_type: z.string().min(1).max(255).optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
+  pipeline: z.enum(["student", "instructor"]).optional(),
+  report_type: z.enum(["similarity", "similarity_ai"]).optional(),
+}).superRefine((input, ctx) => {
+  if (input.pipeline === "student" && input.report_type === "similarity_ai") {
+    ctx.addIssue({ code: "custom", message: "similarity_ai jobs must use the instructor pipeline", path: ["pipeline"] });
+  }
+  if (input.pipeline === "instructor" && input.report_type === "similarity") {
+    ctx.addIssue({ code: "custom", message: "similarity-only jobs must use the student pipeline", path: ["pipeline"] });
+  }
 });
 
 export const Route = createFileRoute("/api/public/v1/jobs")({
@@ -48,6 +57,13 @@ export const Route = createFileRoute("/api/public/v1/jobs")({
           return apiError("invalid_input", "source_path not found in storage — upload before creating the job", 400);
         }
 
+        // Pipeline selection: explicit `pipeline`, or derived from `report_type`.
+        // similarity_ai → instructor (similarity + AI Writing PDF).
+        // similarity    → student   (similarity PDF only, legacy default).
+        const pipeline: "student" | "instructor" =
+          input.pipeline ??
+          (input.report_type === "similarity_ai" ? "instructor" : "student");
+
         const insert = {
           status: "queued" as const,
           original_name: input.original_name,
@@ -59,11 +75,15 @@ export const Route = createFileRoute("/api/public/v1/jobs")({
           callback_url: callbackUrl ?? null,
           metadata: input.metadata ?? {},
           queued_at: new Date().toISOString(),
+          pipeline,
+          slot_id: null,
+          instructor_assignment_id: null,
+          ai_report_status: pipeline === "instructor" ? "pending" : null,
         };
         const { data: job, error } = await supabaseAdmin
           .from("jobs")
           .insert(insert as never)
-          .select("id,status,external_ref,created_at")
+          .select("id,status,external_ref,pipeline,created_at")
           .single();
         if (error || !job) {
           return apiError("internal_error", error?.message ?? "insert failed", 500);
@@ -72,8 +92,10 @@ export const Route = createFileRoute("/api/public/v1/jobs")({
           job_id: job.id,
           status: job.status,
           external_ref: job.external_ref,
+          pipeline: (job as { pipeline?: string }).pipeline ?? pipeline,
+          report_type: pipeline === "instructor" ? "similarity_ai" : "similarity",
           created_at: job.created_at,
-          estimated_minutes: 8,
+          estimated_minutes: pipeline === "instructor" ? 12 : 8,
         }, 201);
       },
 
@@ -87,7 +109,7 @@ export const Route = createFileRoute("/api/public/v1/jobs")({
 
         let q = supabaseAdmin
           .from("jobs")
-          .select("id,status,external_ref,original_name,similarity_percent,created_at,finished_at,error")
+          .select("id,status,external_ref,original_name,pipeline,ai_report_status,similarity_percent,created_at,finished_at,error")
           .eq("api_client_id", auth.client.id)
           .order("created_at", { ascending: false })
           .limit(limit);
