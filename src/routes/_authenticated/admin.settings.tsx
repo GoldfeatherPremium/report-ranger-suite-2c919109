@@ -69,7 +69,7 @@ function Page() {
     }
   }
 
-  const envBlock = data
+  const studentEnvBlock = data
     ? `SUPABASE_URL=${data.supabaseUrl}
 SUPABASE_SERVICE_ROLE_KEY=${data.serviceRoleKey}
 WORKER_ID=contabo-1
@@ -80,8 +80,22 @@ CLAIM_IDLE_MS=10000
 HEARTBEAT_MS=30000`
     : "";
 
+  const instructorEnvBlock = data
+    ? `SUPABASE_URL=${data.supabaseUrl}
+SUPABASE_SERVICE_ROLE_KEY=${data.serviceRoleKey}
+WORKER_ID=instructor-1
+HEADLESS=true
+SUBMISSION_TIMEOUT_MS=1800000
+UPLOAD_TIMEOUT_MS=600000
+AI_WRITING_TIMEOUT_MS=1200000
+POLL_INTERVAL_MS=15000
+CLAIM_IDLE_MS=10000
+HEARTBEAT_MS=30000
+CONCURRENCY=1`
+    : "";
+
   return (
-    <div className="mx-auto max-w-3xl space-y-6">
+    <div className="mx-auto max-w-4xl space-y-6">
       <div>
         <h2 className="text-2xl font-semibold">VPS Worker Credentials</h2>
         <p className="mt-1 text-sm text-muted-foreground">
@@ -160,17 +174,33 @@ HEARTBEAT_MS=30000`
 
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <Label>Full .env for VPS worker</Label>
-              <Button variant="outline" size="sm" disabled={!keyOk} onClick={() => copyGuarded(envBlock, ".env contents")}>
+              <Label>Student worker .env</Label>
+              <Button variant="outline" size="sm" disabled={!keyOk} onClick={() => copyGuarded(studentEnvBlock, "student worker .env contents")}>
                 <Copy className="mr-2 h-4 w-4" /> Copy all
               </Button>
             </div>
             <pre className="max-h-72 overflow-auto rounded-md border bg-muted/40 p-3 text-xs font-mono whitespace-pre-wrap break-all">
-{envBlock}
+{studentEnvBlock}
             </pre>
             <p className="text-xs text-muted-foreground">
-              On the VPS run: <code className="rounded bg-muted px-1 py-0.5">nano /opt/dochub/vps/worker/.env</code>, paste, save, then{" "}
+              Similarity-only service. On the VPS run: <code className="rounded bg-muted px-1 py-0.5">nano /opt/dochub/vps/worker/.env</code>, paste, save, then{" "}
               <code className="rounded bg-muted px-1 py-0.5">systemctl restart turnitin-worker</code>.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label>Instructor worker .env</Label>
+              <Button variant="outline" size="sm" disabled={!keyOk} onClick={() => copyGuarded(instructorEnvBlock, "instructor worker .env contents")}>
+                <Copy className="mr-2 h-4 w-4" /> Copy all
+              </Button>
+            </div>
+            <pre className="max-h-72 overflow-auto rounded-md border bg-muted/40 p-3 text-xs font-mono whitespace-pre-wrap break-all">
+{instructorEnvBlock}
+            </pre>
+            <p className="text-xs text-muted-foreground">
+              Similarity + AI service. On the VPS run: <code className="rounded bg-muted px-1 py-0.5">nano /opt/dochub/vps/worker-instructor/.env</code>, paste, save, then{" "}
+              <code className="rounded bg-muted px-1 py-0.5">systemctl restart turnitin-instructor-worker</code>.
             </p>
           </div>
         </div>

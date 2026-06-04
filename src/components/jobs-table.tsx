@@ -2,13 +2,15 @@ import { useState } from "react";
 import { formatDistanceToNow } from "date-fns";
 import { Download, RotateCw, X, Trash2, FileText } from "lucide-react";
 import { toast } from "sonner";
+import { useServerFn } from "@tanstack/react-start";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "./status-badge";
 import { cn } from "@/lib/utils";
 import {
-  ACTIVE_STATUSES, cancelJob, deleteJob, downloadReport, retryJob,
+  ACTIVE_STATUSES, deleteJob, downloadReport,
   type Job,
 } from "@/lib/jobs";
+import { cancelJobAction, retryJobAction } from "@/lib/jobs.functions";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -25,6 +27,8 @@ export function JobsTable({
 }) {
   const [pending, setPending] = useState<string | null>(null);
   const [toDelete, setToDelete] = useState<Job | null>(null);
+  const retryJob = useServerFn(retryJobAction);
+  const cancelJob = useServerFn(cancelJobAction);
 
   async function handleDownload(j: Job, kind: "similarity" | "ai" = "similarity") {
     setPending(j.id);
@@ -36,16 +40,16 @@ export function JobsTable({
 
   async function handleRetry(j: Job) {
     setPending(j.id);
-    const { error } = await retryJob(j.id);
+    const result = await retryJob({ data: { jobId: j.id } }).then(() => ({ error: null })).catch((error) => ({ error }));
     setPending(null);
-    if (error) toast.error(error.message); else { toast.success("Re-queued"); onChange?.(); }
+    if (result.error) toast.error(result.error.message); else { toast.success("Re-queued"); onChange?.(); }
   }
 
   async function handleCancel(j: Job) {
     setPending(j.id);
-    const { error } = await cancelJob(j.id);
+    const result = await cancelJob({ data: { jobId: j.id } }).then(() => ({ error: null })).catch((error) => ({ error }));
     setPending(null);
-    if (error) toast.error(error.message); else { toast.success("Cancelled"); onChange?.(); }
+    if (result.error) toast.error(result.error.message); else { toast.success("Cancelled"); onChange?.(); }
   }
 
   async function confirmDelete() {
