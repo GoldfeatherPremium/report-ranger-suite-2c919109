@@ -1,5 +1,5 @@
 import { Link, useRouterState } from "@tanstack/react-router";
-import { LayoutDashboard, History, Users, Briefcase, Settings, LogOut, ShieldCheck, FileStack, KeyRound } from "lucide-react";
+import { LayoutDashboard, History, Users, Briefcase, Settings, LogOut, ShieldCheck, FileStack, KeyRound, GraduationCap, Brain } from "lucide-react";
 import {
   Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent,
   SidebarGroupLabel, SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem,
@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 
 const userItems = [
   { title: "Dashboard", url: "/dashboard", icon: LayoutDashboard },
+  { title: "Similarity + AI", url: "/dashboard/ai", icon: Brain },
   { title: "History", url: "/history", icon: History },
 ];
 
@@ -56,22 +57,38 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
         {isAdmin && (
-          <SidebarGroup>
-            <SidebarGroupLabel>Admin</SidebarGroupLabel>
-            <SidebarGroupContent>
-              <SidebarMenu>
-                {adminItems.map((i) => (
-                  <SidebarMenuItem key={i.url}>
-                    <SidebarMenuButton asChild isActive={pathname === i.url}>
-                      <Link to={i.url}>
-                        <i.icon /><span>{i.title}</span>
+          <>
+            <SidebarGroup>
+              <SidebarGroupLabel>Admin</SidebarGroupLabel>
+              <SidebarGroupContent>
+                <SidebarMenu>
+                  {adminItems.map((i) => (
+                    <SidebarMenuItem key={i.url}>
+                      <SidebarMenuButton asChild isActive={pathname === i.url}>
+                        <Link to={i.url}>
+                          <i.icon /><span>{i.title}</span>
+                        </Link>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  ))}
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+            <SidebarGroup>
+              <SidebarGroupLabel>Instructor (AI)</SidebarGroupLabel>
+              <SidebarGroupContent>
+                <SidebarMenu>
+                  <SidebarMenuItem>
+                    <SidebarMenuButton asChild isActive={pathname.startsWith("/admin/instructor")}>
+                      <Link to="/admin/instructor">
+                        <GraduationCap /><span>Instructor Accounts</span>
                       </Link>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
-                ))}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+          </>
         )}
       </SidebarContent>
       <SidebarFooter className="border-t p-3">
