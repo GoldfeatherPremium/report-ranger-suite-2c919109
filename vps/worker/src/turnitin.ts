@@ -310,6 +310,7 @@ async function runStepRecovery(
 export type SubmissionResult = {
   pdf: Buffer;
   submissionId: string | null;
+  similarityPercent: number | null;
 };
 
 export async function submitToTurnitin(opts: {
@@ -443,9 +444,9 @@ export async function submitToTurnitin(opts: {
     // Just wait for the similarity score on this same slot's dashboard.
     if (existingSubmissionId) {
       await onProgress(`resuming score-wait (already submitted, id=${existingSubmissionId})`);
-      const submissionId = await waitForSimilarity(page, submissionTimeoutMs, pollIntervalMs, onProgress);
+      const { submissionId, similarityPercent } = await waitForSimilarity(page, submissionTimeoutMs, pollIntervalMs, onProgress);
       const pdf = await downloadSimilarityPdf(page, onProgress);
-      return { pdf, submissionId: submissionId ?? existingSubmissionId };
+      return { pdf, submissionId: submissionId ?? existingSubmissionId, similarityPercent };
     }
 
     // ── Step 1: decide path based on what is on the page ──────────────────────
@@ -642,13 +643,13 @@ export async function submitToTurnitin(opts: {
 
     // ── Step 7: wait for the similarity score on the dashboard ─────────────────
     await onProgress("waiting for similarity score");
-    const submissionId = await waitForSimilarity(page, submissionTimeoutMs, pollIntervalMs, onProgress);
+    const { submissionId, similarityPercent } = await waitForSimilarity(page, submissionTimeoutMs, pollIntervalMs, onProgress);
 
     // ── Step 8: open viewer and download the PDF ───────────────────────────────
     await onProgress("downloading similarity PDF");
     const pdf = await downloadSimilarityPdf(page, onProgress);
 
-    return { pdf, submissionId };
+    return { pdf, submissionId, similarityPercent };
   } finally {
     await browser?.close().catch(() => {});
     await rm(tmp, { recursive: true, force: true }).catch(() => {});
@@ -822,7 +823,7 @@ async function extractSubmissionIdFromPage(page: Page): Promise<string | null> {
   return null;
 }
 
-async function waitForSimilarity(page: Page, timeoutMs: number, pollMs: number, onProgress: (m: string) => Promise<void>): Promise<string | null> {
+async function waitForSimilarity(page: Page, timeoutMs: number, pollMs: number, onProgress: (m: string) => Promise<void>): Promise<{ submissionId: string | null; similarityPercent: number | null }> {
   const deadline = Date.now() + timeoutMs;
   let submissionId: string | null = null;
 
@@ -839,9 +840,11 @@ async function waitForSimilarity(page: Page, timeoutMs: number, pollMs: number, 
 
     // Look for a percentage on the similarity cell
     const text = await page.locator(SEL.similarityCell).first().innerText({ timeout: 5_000 }).catch(() => "");
-    if (/\d+\s*%/.test(text)) {
-      await onProgress(`similarity ready: ${text.trim()}`);
-      return submissionId;
+    const pctMatch = text.match(/(\d+(?:\.\d+)?)\s*%/);
+    if (pctMatch) {
+      const similarityPercent = Number(pctMatch[1]);
+      await onProgress(`similarity ready: ${text.trim()} (parsed=${similarityPercent}%)`);
+      return { submissionId, similarityPercent: Number.isFinite(similarityPercent) ? similarityPercent : null };
     }
 
     await onProgress(`not ready yet, sleeping ${Math.round(pollMs / 1000)}s`);
