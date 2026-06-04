@@ -132,14 +132,14 @@ export async function uploadReport(userId: string, jobId: string, pdf: Buffer): 
     upsert: true,
   });
   if (error) throw error;
-  const { error: ins } = await supabase.from("reports").insert({
+  const { error: ins } = await supabase.from("reports").upsert({
     job_id: jobId,
     storage_path: path,
     file_name: `${jobId}.pdf`,
     mime_type: "application/pdf",
     size_bytes: pdf.length,
     kind: "similarity",
-  });
+  }, { onConflict: "job_id,kind" });
   if (ins) throw ins;
   return path;
 }
