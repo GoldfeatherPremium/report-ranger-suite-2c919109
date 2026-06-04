@@ -22,6 +22,9 @@ export type Job = {
   turnitin_submission_id: string | null;
   worker_id: string | null;
   last_polled_at: string | null;
+  pipeline: "student" | "instructor";
+  instructor_assignment_id: string | null;
+  ai_report_status: "pending" | "ready" | "failed" | null;
 };
 
 export const ACTIVE_STATUSES: JobStatus[] = ["pending", "queued", "processing"];
@@ -43,7 +46,11 @@ export function formatBytes(n: number | null | undefined) {
   return `${v.toFixed(1)} ${u[i]}`;
 }
 
-export async function uploadAndCreateJob(userId: string, file: File): Promise<{ error: string | null }> {
+export async function uploadAndCreateJob(
+  userId: string,
+  file: File,
+  pipeline: "student" | "instructor" = "student",
+): Promise<{ error: string | null }> {
   const ext = file.name.includes(".") ? file.name.split(".").pop() : "";
   const key = `${userId}/${crypto.randomUUID()}${ext ? "." + ext : ""}`;
   const { error: upErr } = await supabase.storage.from("documents").upload(key, file, {
@@ -61,6 +68,7 @@ export async function uploadAndCreateJob(userId: string, file: File): Promise<{ 
     status: "queued",
     queued_at: new Date().toISOString(),
     max_attempts: 5,
+    pipeline,
   });
   if (insErr) {
     await supabase.storage.from("documents").remove([key]);
@@ -69,11 +77,15 @@ export async function uploadAndCreateJob(userId: string, file: File): Promise<{ 
   return { error: null };
 }
 
-export async function downloadReport(jobId: string): Promise<string | null> {
+export async function downloadReport(
+  jobId: string,
+  kind: "similarity" | "ai" = "similarity",
+): Promise<string | null> {
   const { data: report } = await supabase
     .from("reports")
     .select("storage_path, file_name")
     .eq("job_id", jobId)
+    .eq("kind", kind)
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();

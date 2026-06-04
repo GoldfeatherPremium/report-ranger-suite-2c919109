@@ -7,7 +7,13 @@ import { cn } from "@/lib/utils";
 
 const MAX_BYTES = 50 * 1024 * 1024;
 
-export function UploadDropzone({ onUploaded }: { onUploaded?: () => void }) {
+export function UploadDropzone({
+  onUploaded,
+  pipeline = "student",
+}: {
+  onUploaded?: () => void;
+  pipeline?: "student" | "instructor";
+}) {
   const { user } = useAuth();
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -25,7 +31,7 @@ export function UploadDropzone({ onUploaded }: { onUploaded?: () => void }) {
         done++; setProgress(Math.round((done / list.length) * 100));
         continue;
       }
-      const { error } = await uploadAndCreateJob(user.id, f);
+      const { error } = await uploadAndCreateJob(user.id, f, pipeline);
       if (error) toast.error(`${f.name}: ${error}`);
       else toast.success(`${f.name} queued`);
       done++; setProgress(Math.round((done / list.length) * 100));
@@ -33,7 +39,7 @@ export function UploadDropzone({ onUploaded }: { onUploaded?: () => void }) {
     setUploading(false);
     setProgress(0);
     onUploaded?.();
-  }, [user, onUploaded]);
+  }, [user, onUploaded, pipeline]);
 
   return (
     <div

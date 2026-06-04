@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# update.sh — pull latest code from git and redeploy the Turnitin worker.
+# update.sh — pull latest code from git and redeploy both workers.
 # Survives SSH disconnects: call with --background to run detached.
 #
 # Usage:
@@ -10,7 +10,8 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 WORKER_DIR="$REPO_DIR/vps/worker"
-BRANCH="claude/turnitin-document-download-SxZs2"
+INSTRUCTOR_WORKER_DIR="$REPO_DIR/vps/worker-instructor"
+BRANCH="${WORKER_BRANCH:-main}"
 LOG="/var/log/worker-update.log"
 
 # ── background mode: re-exec with nohup and exit ─────────────────────────────
@@ -19,7 +20,7 @@ if [[ "${1:-}" == "--background" ]]; then
   BG_PID=$!
   echo "Running in background (PID $BG_PID)"
   echo "Watch progress:  tail -f $LOG"
-  echo "Check status:    systemctl status turnitin-worker --no-pager"
+  echo "Check status:    systemctl status turnitin-worker turnitin-instructor-worker --no-pager"
   exit 0
 fi
 
@@ -42,28 +43,24 @@ log "Updating $LOCAL -> $REMOTE"
 git checkout "$BRANCH"
 git reset --hard "origin/$BRANCH"
 
-# ── 2. install deps ───────────────────────────────────────────────────────────
-log "Installing npm dependencies"
+# ── 2. student worker ─────────────────────────────────────────────────────────
+log "Installing student worker npm deps"
 cd "$WORKER_DIR"
 npm install
 
-# ── 3. build ──────────────────────────────────────────────────────────────────
-log "Building worker"
+log "Building student worker"
 npm run build
 
-# ── 4. prune dev deps ─────────────────────────────────────────────────────────
-log "Pruning dev dependencies"
+log "Pruning student worker dev deps"
 npm prune --omit=dev
 
-# ── 5. refresh systemd unit ───────────────────────────────────────────────────
-log "Refreshing systemd unit"
+log "Refreshing systemd unit (student)"
 sed "s|__WORKER_DIR__|$WORKER_DIR|g" \
   "$REPO_DIR/vps/turnitin-worker.service" \
   > /etc/systemd/system/turnitin-worker.service
 systemctl daemon-reload
 systemctl enable turnitin-worker --quiet
 
-# ── 6. restart ────────────────────────────────────────────────────────────────
 log "Restarting turnitin-worker"
 systemctl reset-failed turnitin-worker 2>/dev/null || true
 systemctl restart turnitin-worker
@@ -71,10 +68,44 @@ sleep 2
 
 STATUS="$(systemctl is-active turnitin-worker)"
 if [[ "$STATUS" == "active" ]]; then
-  log "Worker is running (active)"
+  log "Student worker is running (active)"
 else
-  log "WARNING: worker status is '$STATUS' — check logs:"
-  log "  journalctl -u turnitin-worker -n 40 --no-pager"
+  log "WARNING: student worker status is '$STATUS' — check: journalctl -u turnitin-worker -n 40 --no-pager"
+fi
+
+# ── 3. instructor worker (only if .env exists) ────────────────────────────────
+if [[ -f "$INSTRUCTOR_WORKER_DIR/.env" ]]; then
+  log "Installing instructor worker npm deps"
+  cd "$INSTRUCTOR_WORKER_DIR"
+  npm install
+
+  log "Building instructor worker"
+  npm run build
+
+  log "Pruning instructor worker dev deps"
+  npm prune --omit=dev
+
+  log "Refreshing systemd unit (instructor)"
+  sed "s|__WORKER_DIR__|$INSTRUCTOR_WORKER_DIR|g" \
+    "$REPO_DIR/vps/turnitin-instructor-worker.service" \
+    > /etc/systemd/system/turnitin-instructor-worker.service
+  systemctl daemon-reload
+  systemctl enable turnitin-instructor-worker --quiet
+
+  log "Restarting turnitin-instructor-worker"
+  systemctl reset-failed turnitin-instructor-worker 2>/dev/null || true
+  systemctl restart turnitin-instructor-worker
+  sleep 2
+
+  INSTR_STATUS="$(systemctl is-active turnitin-instructor-worker)"
+  if [[ "$INSTR_STATUS" == "active" ]]; then
+    log "Instructor worker is running (active)"
+  else
+    log "WARNING: instructor worker status is '$INSTR_STATUS' — check: journalctl -u turnitin-instructor-worker -n 40 --no-pager"
+  fi
+else
+  log "(Skipping instructor worker — $INSTRUCTOR_WORKER_DIR/.env not found)"
+  log "  To enable: cp $INSTRUCTOR_WORKER_DIR/.env.example $INSTRUCTOR_WORKER_DIR/.env && nano $INSTRUCTOR_WORKER_DIR/.env && bash $0"
 fi
 
 log "Done. Deployed $REMOTE"

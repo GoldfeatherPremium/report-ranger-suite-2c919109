@@ -88,51 +88,63 @@ function AdminOverview() {
         </div>
       </div>
 
-      <div className="rounded-xl border bg-card p-6">
-        <div className="flex items-center gap-2">
-          <Server className="h-4 w-4 text-muted-foreground" />
-          <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">VPS Workers</h3>
-        </div>
-        <p className="mt-1 text-xs text-muted-foreground">
-          Each row is a worker process on your Contabo VPS heartbeating into the database.
-          If this is empty, no worker is connected — check the systemd service on the VPS.
-        </p>
-        <div className="mt-4 overflow-x-auto rounded-lg border">
-          <table className="w-full min-w-[560px] text-sm">
-            <thead className="border-b bg-muted/40 text-left text-xs uppercase text-muted-foreground">
-              <tr>
-                <th className="px-4 py-2">Worker ID</th>
-                <th className="px-4 py-2">State</th>
-                <th className="px-4 py-2">Active jobs</th>
-                <th className="px-4 py-2">Last heartbeat</th>
-              </tr>
-            </thead>
-            <tbody>
-              {workers.length === 0 && (
-                <tr><td colSpan={4} className="px-4 py-8 text-center text-muted-foreground">No workers connected.</td></tr>
-              )}
-              {workers.map((w) => {
-                const online = Date.now() - new Date(w.last_seen).getTime() < WORKER_STALE_MS;
-                return (
-                  <tr key={w.worker_id} className="border-b last:border-0">
-                    <td className="px-4 py-2 font-medium">{w.worker_id}</td>
-                    <td className="px-4 py-2">
-                      <span className={cn(
-                        "inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs",
-                        online ? "border-success/30 bg-success/10 text-success" : "border-destructive/30 bg-destructive/10 text-destructive",
-                      )}>
-                        <span className={cn("h-1.5 w-1.5 rounded-full", online ? "bg-success" : "bg-destructive")} />
-                        {online ? "Online" : "Offline"}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2">{w.active_jobs}</td>
-                    <td className="px-4 py-2 text-muted-foreground">{formatDistanceToNow(new Date(w.last_seen), { addSuffix: true })}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+      <WorkerPanel
+        title="Student workers"
+        subtitle="Similarity-only pipeline (turnitin-worker service)."
+        workers={workers.filter((w) => !w.worker_id.startsWith("instructor-"))}
+      />
+      <WorkerPanel
+        title="Instructor workers (AI)"
+        subtitle="Similarity + AI Writing pipeline (turnitin-instructor-worker service)."
+        workers={workers.filter((w) => w.worker_id.startsWith("instructor-"))}
+      />
+    </div>
+  );
+}
+
+function WorkerPanel({ title, subtitle, workers }: { title: string; subtitle: string; workers: WorkerHealth[] }) {
+  return (
+    <div className="rounded-xl border bg-card p-6">
+      <div className="flex items-center gap-2">
+        <Server className="h-4 w-4 text-muted-foreground" />
+        <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">{title}</h3>
+      </div>
+      <p className="mt-1 text-xs text-muted-foreground">{subtitle}</p>
+      <div className="mt-4 overflow-x-auto rounded-lg border">
+        <table className="w-full min-w-[560px] text-sm">
+          <thead className="border-b bg-muted/40 text-left text-xs uppercase text-muted-foreground">
+            <tr>
+              <th className="px-4 py-2">Worker ID</th>
+              <th className="px-4 py-2">State</th>
+              <th className="px-4 py-2">Active jobs</th>
+              <th className="px-4 py-2">Last heartbeat</th>
+            </tr>
+          </thead>
+          <tbody>
+            {workers.length === 0 && (
+              <tr><td colSpan={4} className="px-4 py-8 text-center text-muted-foreground">No workers connected.</td></tr>
+            )}
+            {workers.map((w) => {
+              const online = Date.now() - new Date(w.last_seen).getTime() < WORKER_STALE_MS;
+              return (
+                <tr key={w.worker_id} className="border-b last:border-0">
+                  <td className="px-4 py-2 font-medium">{w.worker_id}</td>
+                  <td className="px-4 py-2">
+                    <span className={cn(
+                      "inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs",
+                      online ? "border-success/30 bg-success/10 text-success" : "border-destructive/30 bg-destructive/10 text-destructive",
+                    )}>
+                      <span className={cn("h-1.5 w-1.5 rounded-full", online ? "bg-success" : "bg-destructive")} />
+                      {online ? "Online" : "Offline"}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2">{w.active_jobs}</td>
+                  <td className="px-4 py-2 text-muted-foreground">{formatDistanceToNow(new Date(w.last_seen), { addSuffix: true })}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
     </div>
   );
