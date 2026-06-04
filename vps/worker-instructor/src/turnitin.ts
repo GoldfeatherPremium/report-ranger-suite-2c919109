@@ -939,27 +939,45 @@ async function enterAssignmentInbox(
       }
     }
 
-    // 2) Class-home page (assignment list): click "View" on the assignment row.
+    // 2) Class-home page (assignment list): click "View" for the assignment.
+    // The assignment NAME is a section-header row and its "View" link sits in the
+    // following row, so we locate the name element then click the first "View"
+    // that follows it in document order (not "same <tr>").
     if (/class\s*homepage|class\s*home|add assignment|now viewing/i.test(body)) {
-      const clicked = await page.evaluate((name) => {
-        const findView = (row: Element): HTMLElement | undefined =>
-          Array.from(row.querySelectorAll("a, button, input")).find((el) => {
-            const t = (el.textContent || (el as HTMLInputElement).value || "").trim();
-            return /^view$/i.test(t);
-          }) as HTMLElement | undefined;
-        for (const row of Array.from(document.querySelectorAll("tr"))) {
-          if (name && !(row.textContent || "").toLowerCase().includes(name.toLowerCase())) continue;
-          const v = findView(row);
-          if (v) { v.scrollIntoView({ block: "center" }); v.click(); return true; }
+      const result = await page.evaluate((name) => {
+        const norm = (s: string | null) => (s || "").trim().toLowerCase();
+        const target = norm(name);
+        const isView = (el: Element) => /^view$/i.test((el.textContent || (el as HTMLInputElement).value || "").trim());
+        const views = Array.from(document.querySelectorAll("a, button, input")).filter(isView) as HTMLElement[];
+        if (views.length === 0) return "no-view";
+
+        const click = (el: HTMLElement, how: string) => { el.scrollIntoView({ block: "center" }); el.click(); return how; };
+        if (!target) return click(views[0], "first");
+
+        // Find the element that holds the assignment name (exact leaf match first).
+        const all = Array.from(document.querySelectorAll("td, th, a, span, div, h1, h2, h3, b, strong"));
+        const nameEl =
+          all.find((el) => el.children.length === 0 && norm(el.textContent) === target) ||
+          all.find((el) => el.children.length === 0 && norm(el.textContent).includes(target));
+
+        if (nameEl) {
+          // First "View" that follows the name in document order.
+          const after = views.find((v) =>
+            nameEl.compareDocumentPosition(v) & Node.DOCUMENT_POSITION_FOLLOWING);
+          if (after) return click(after, "after-name");
         }
-        return false;
-      }, assignmentName).catch(() => false);
-      if (clicked) {
-        await onProgress(`nav: class-home — clicking "View" for assignment "${assignmentName}"`);
+        // Fallback: a View whose surrounding row text contains the name.
+        const byRow = views.find((v) => norm(v.closest("tr")?.textContent ?? "").includes(target));
+        if (byRow) return click(byRow, "row-text");
+        return "name-not-found";
+      }, assignmentName).catch(() => "error");
+
+      if (result === "after-name" || result === "row-text" || result === "first") {
+        await onProgress(`nav: class-home — clicked "View" for "${assignmentName}" (${result})`);
         await waitAfterNav(page);
         continue;
       }
-      await onProgress(`[warn] nav: no "View" link found for assignment "${assignmentName}"`);
+      await onProgress(`[warn] nav: could not click "View" for "${assignmentName}" (${result})`);
       return;
     }
 
