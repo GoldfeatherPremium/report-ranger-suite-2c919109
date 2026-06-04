@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "./load-env.js";
 import {
   claimNextInstructorJob, downloadSource, getAssignmentInfo, heartbeat, log,
   markJobDone, markJobFailed, markJobSubmitted, touchJob, uploadReport,
