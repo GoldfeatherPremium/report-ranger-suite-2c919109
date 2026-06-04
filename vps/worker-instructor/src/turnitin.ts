@@ -3,11 +3,6 @@ import { writeFile, mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssignmentInfo } from "./supabase.js";
-import { aiDetectPageState } from "./ai-resolver.js";
-import { findElementWithAI } from "./ai-helper.js";
-import { locateByVision, visionAvailable } from "./resolve/vision.js";
-import { visionAgent } from "./resolve/agent.js";
-import { settle } from "./resolve/resolver.js";
 import { uploadDebugScreenshot } from "./supabase.js";
 
 export class ResubmitDeniedError extends Error {
@@ -224,35 +219,36 @@ async function retryClick(
   return false;
 }
 
+// Deterministic click/fill across frames (intent kept only for log readability).
 async function smartClick(
   page: Page,
   selector: string,
-  intent: string,
-  log: Logger,
+  _intent: string,
+  _log: Logger,
   timeoutMs = 8_000,
 ): Promise<boolean> {
-  const ok = await tryClickInAnyFrame(page, selector, timeoutMs);
-  if (ok) return true;
-  const ai = await findElementWithAI(page, intent);
-  if (!ai) return false;
-  await log(`[warn] [ai-fallback] intent="${intent}" selector=${ai.selector} — update SEL`);
-  return tryClickInAnyFrame(page, ai.selector, 5_000);
+  return tryClickInAnyFrame(page, selector, timeoutMs);
 }
 
 async function smartFill(
   page: Page,
   selector: string,
   value: string,
-  intent: string,
-  log: Logger,
+  _intent: string,
+  _log: Logger,
   timeoutMs = 5_000,
 ): Promise<boolean> {
-  const ok = await fillInAnyFrame(page, selector, value, timeoutMs);
-  if (ok) return true;
-  const ai = await findElementWithAI(page, intent);
-  if (!ai) return false;
-  await log(`[warn] [ai-fallback] intent="${intent}" selector=${ai.selector} — update SEL`);
-  return fillInAnyFrame(page, ai.selector, value, 5_000);
+  return fillInAnyFrame(page, selector, value, timeoutMs);
+}
+
+// Poll `ok` until true or `ms` elapses (postcondition gate).
+async function settle(page: Page, ok: () => Promise<boolean>, ms = 3_000): Promise<boolean> {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (await ok().catch(() => false)) return true;
+    await page.waitForTimeout(250);
+  }
+  return false;
 }
 
 async function isResubmitDenied(page: Page, onProgress: Logger): Promise<boolean> {
@@ -263,8 +259,6 @@ async function isResubmitDenied(page: Page, onProgress: Logger): Promise<boolean
   for (const pat of RESUBMIT_DENIED_TEXTS) {
     if (pat.test(body)) { await onProgress(`[warn] resubmit denied (text: ${pat})`); return true; }
   }
-  const ai = await findElementWithAI(page, "an error message saying resubmission is not allowed or the slot is locked");
-  if (ai) { await onProgress(`[warn] resubmit denied (AI: ${ai.reasoning})`); return true; }
   return false;
 }
 
@@ -354,9 +348,7 @@ export async function submitToTurnitin(opts: {
       ]);
 
       if (await locateInAnyFrame(page, SEL.emailInput)) {
-        const diagLines = await dumpPageControls(page, onProgress);
-        const state = await aiDetectPageState(diagLines, page.url(), await page.title().catch(() => ""), onProgress);
-        if (state === "captcha") throw new Error("CAPTCHA detected — manual intervention required.");
+        await dumpPageControls(page, onProgress);
         throw new Error("Still on login form after submitting — check credentials (see [diag]).");
       }
       await onProgress("logged in");
@@ -370,8 +362,8 @@ export async function submitToTurnitin(opts: {
       }
     }
 
-    // ── Enter the assignment inbox (handle CLASS HOME redirect → click View) ────
-    await enterAssignmentInbox(page, assignment.assignment_label, onProgress);
+    // ── Enter the assignment inbox (class list → class home → View → inbox) ─────
+    await enterAssignmentInbox(page, assignment.class_label, assignment.assignment_label, onProgress);
 
     // ── RESUME PATH ────────────────────────────────────────────────────────────
     if (existingSubmissionId) {
@@ -401,26 +393,6 @@ export async function submitToTurnitin(opts: {
         const dotBoxes = await collectMoreDotsBoxes(page, onProgress);
         dotBoxes.sort((a, b) => a.y - b.y);
 
-        // AI fallback when the selectors miss every ⋮ button.
-        if (dotBoxes.length === 0) {
-          const ai = await findElementWithAI(page, "the three-dot (⋮) More actions button in a student submission table row");
-          if (ai) {
-            const fr = await locateInAnyFrame(page, ai.selector);
-            const b  = fr ? await fr.locator(ai.selector).first().boundingBox().catch(() => null) : null;
-            if (b) dotBoxes.push({ x: b.x + b.width / 2, y: b.y + b.height / 2 });
-          }
-        }
-
-        // Tier 2 (vision): no ⋮ found by DOM at all — ask a vision model.
-        if (dotBoxes.length === 0 && visionAvailable()) {
-          const vdot = await locateByVision(
-            page,
-            `the three-dot vertical "⋮" More actions icon button in row ${rowIndex + 1} (counting from the top) of the student submissions table`,
-            onProgress,
-          );
-          if (vdot) dotBoxes.push({ x: vdot.x, y: vdot.y });
-        }
-
         if (dotBoxes.length === 0) {
           await onProgress("step1: no ⋮ buttons found yet — scrolling and waiting");
           await scrollTableIntoView(page);
@@ -441,64 +413,31 @@ export async function submitToTurnitin(opts: {
           await page.waitForTimeout(800);
 
           // Read the open popup's item labels (title attr / shadow text).
-          let labels = await readDropdownItemLabels(page);
-          let hasResubmit   = dropdownHas(labels, RESUBMIT_RE) || (await locateInAnyFrame(page, SEL.resubmitMenuItem))   !== null;
-          let hasSubmitFile = dropdownHas(labels, SUBMIT_FILE_RE) || (await locateInAnyFrame(page, SEL.submitFileMenuItem)) !== null;
-
-          // Tier 2 (vision): if the DOM click opened the wrong control (e.g. the
-          // language picker) or no menu, ask a vision model to find this row's ⋮.
-          if (!hasResubmit && !hasSubmitFile && visionAvailable()) {
-            await onProgress(`step1: DOM popup not a submission menu — vision fallback for row #${idx + 1}`);
-            await page.keyboard.press("Escape").catch(() => {});
-            await page.waitForTimeout(200);
-            const vdot = await locateByVision(
-              page,
-              `the three-dot vertical "⋮" More actions icon button in row ${idx + 1} (counting from the top) of the student submissions table`,
-              onProgress,
-            );
-            if (vdot) {
-              await page.mouse.move(vdot.x, vdot.y);
-              await page.waitForTimeout(120);
-              await page.mouse.click(vdot.x, vdot.y);
-              await page.waitForTimeout(800);
-              labels = await readDropdownItemLabels(page);
-              hasResubmit   = dropdownHas(labels, RESUBMIT_RE) || (await locateInAnyFrame(page, SEL.resubmitMenuItem))   !== null;
-              hasSubmitFile = dropdownHas(labels, SUBMIT_FILE_RE) || (await locateInAnyFrame(page, SEL.submitFileMenuItem)) !== null;
-            }
-          }
+          const labels = await readDropdownItemLabels(page);
+          const hasResubmit   = dropdownHas(labels, RESUBMIT_RE) || (await locateInAnyFrame(page, SEL.resubmitMenuItem))   !== null;
+          const hasSubmitFile = dropdownHas(labels, SUBMIT_FILE_RE) || (await locateInAnyFrame(page, SEL.submitFileMenuItem)) !== null;
           await onProgress(`step1: dropdown items = [${labels.join(" | ") || "none"}] (resubmit=${hasResubmit} submit=${hasSubmitFile})`);
 
           if (hasResubmit) {
             if (await isResubmitDenied(page, onProgress)) throw new ResubmitDeniedError(assignment.assignment_label);
             await onProgress("step1: clicking 'Resubmit file'");
-            if (!(await clickItemBySelector(page, SEL.resubmitMenuItem))) {
-              const vr = visionAvailable()
-                ? await locateByVision(page, 'the "Resubmit file" option in the open dropdown menu', onProgress)
-                : null;
-              if (vr) { await page.mouse.move(vr.x, vr.y); await page.waitForTimeout(120); await page.mouse.click(vr.x, vr.y); }
-              else await smartClick(page, SEL.resubmitMenuItem, "the Resubmit file dropdown item", onProgress, 5_000);
-            }
+            if (!(await clickItemBySelector(page, SEL.resubmitMenuItem)))
+              await smartClick(page, SEL.resubmitMenuItem, "the Resubmit file dropdown item", onProgress, 5_000);
             await page.waitForTimeout(800);
-            // Some skins show a "this will replace the existing paper" confirm
-            // before the upload form — click it if present (best effort).
-            await tryClickInAnyFrame(page, SEL.confirmResubmission, 3_000);
+            // Resubmit shows a "this overwrites the existing paper" confirm
+            // dialog before the upload form — click Confirm.
+            await tryClickInAnyFrame(page, SEL.confirmResubmission, 5_000);
             await page.waitForTimeout(500);
             if (await isResubmitDenied(page, onProgress)) throw new ResubmitDeniedError(assignment.assignment_label);
             // Postcondition: the upload dialog must actually have opened.
-            if (await settle(page, () => uploadDialogReady(page), 6_000)) {
-              submitFileOpened = true;
-            } else {
-              await onProgress("step1: Resubmit clicked but upload dialog did not appear — retrying");
-            }
+            if (await settle(page, () => uploadDialogReady(page), 6_000)) submitFileOpened = true;
+            else await onProgress("step1: Resubmit clicked but upload dialog did not appear — retrying");
           } else if (hasSubmitFile) {
             await onProgress("step1: empty slot — clicking 'Submit file'");
             if (!(await clickItemBySelector(page, SEL.submitFileMenuItem)))
               await smartClick(page, SEL.submitFileMenuItem, "the Submit file dropdown item", onProgress, 5_000);
-            if (await settle(page, () => uploadDialogReady(page), 6_000)) {
-              submitFileOpened = true;
-            } else {
-              await onProgress("step1: Submit clicked but upload dialog did not appear — retrying");
-            }
+            if (await settle(page, () => uploadDialogReady(page), 6_000)) submitFileOpened = true;
+            else await onProgress("step1: Submit clicked but upload dialog did not appear — retrying");
           } else {
             // Popup didn't contain a submission action — close and retry.
             await onProgress("step1: popup had no Resubmit/Submit item — retrying");
@@ -514,29 +453,10 @@ export async function submitToTurnitin(opts: {
         }
       }
 
-      // ── Tier 3: Gemini "computer use" agent — last resort before failing ──────
-      if (!submitFileOpened && visionAvailable()) {
-        await onProgress(`step1: Tier-3 agent attempting row #${rowIndex + 1}`);
-        const ok = await visionAgent(
-          page,
-          `This is a Turnitin instructor "Submission list" page. First, if any language/region, ` +
-          `cookie, or onboarding dialog is open (e.g. a list of languages with a "Proceed" button), ` +
-          `dismiss it by choosing English and/or clicking Proceed/Accept/Close so the submissions ` +
-          `table is visible. Then open the three-dot vertical "⋮ More actions" menu on row ` +
-          `${rowIndex + 1} (counting from the top of the table) and click "Resubmit file". ` +
-          `The goal is achieved when the file upload dialog appears.`,
-          () => uploadDialogReady(page),
-          onProgress,
-        );
-        if (ok) { await onProgress("step1: Tier-3 agent opened the upload dialog"); submitFileOpened = true; }
-      }
-
       if (!submitFileOpened) {
         await captureDebugState(page, "step1-fail", onProgress);
-        const diagLines = await dumpPageControls(page, onProgress);
-        const state = await aiDetectPageState(diagLines, page.url(), await page.title().catch(() => ""), onProgress);
-        if (state === "captcha") throw new Error("CAPTCHA on assignment page.");
-        if (state === "login")   throw new Error("Redirected to login — session expired.");
+        await dumpPageControls(page, onProgress);
+        if (await locateInAnyFrame(page, SEL.emailInput)) throw new Error("Redirected to login — session expired.");
         throw new Error(`Could not open the ⋮ menu / Resubmit on row #${rowIndex + 1} — see [diag].`);
       }
     }
@@ -831,17 +751,6 @@ async function openViewerForOwnRow(
     }
   }
 
-  // Method 3: AI fallback
-  if (!clicked) {
-    const ai = await findElementWithAI(page,
-      `the similarity percentage link (e.g. "11%") for our specific submission titled "${titleBase}" in the student submission table`);
-    if (ai) {
-      await onProgress(`[warn] [ai-fallback] viewer link via AI: ${ai.selector}`);
-      await tryClickInAnyFrame(page, ai.selector, 5_000);
-      clicked = true;
-    }
-  }
-
   if (!clicked) {
     await dumpPageControls(page, onProgress);
     throw new Error(`Cannot find similarity link for our submission "${titleBase}" — see [diag].`);
@@ -937,13 +846,6 @@ async function openViewerDownloadMenu(viewer: Page, onProgress: Logger): Promise
       if (await menuVisible()) return true;
     }
 
-    const ai = await findElementWithAI(viewer, "the Download button at the top right of the Turnitin viewer that opens a popup with Similarity Report and AI Writing Report options");
-    if (ai) {
-      await onProgress(`[warn] [ai-fallback] Download button via AI: ${ai.selector}`);
-      await tryClickInAnyFrame(viewer, ai.selector, 5_000);
-      await viewer.waitForTimeout(1_500);
-      if (await menuVisible()) return true;
-    }
     await viewer.waitForTimeout(1_000);
   }
   return false;
@@ -963,12 +865,6 @@ async function clickMenuOption(viewer: Page, selector: string, intent: string, o
         return true;
       }
       await loc.click({ timeout: 3_000 }).catch(() => {});
-      return true;
-    }
-    const ai = await findElementWithAI(viewer, intent);
-    if (ai) {
-      await onProgress(`[warn] [ai-fallback] menu option via AI: ${ai.selector}`);
-      await tryClickInAnyFrame(viewer, ai.selector, 5_000);
       return true;
     }
     await viewer.waitForTimeout(400);
@@ -1008,61 +904,92 @@ async function gotoAssignmentPage(page: Page, url: string, onProgress: Logger): 
   await onProgress(`assignment page settle timeout (continuing anyway): ${page.url().slice(0, 90)}`);
 }
 
-// Turnitin frequently redirects the configured assignment URL to the CLASS HOME
-// page — a list of assignments, each with a "View" action that opens its inbox.
-// If we land there, click "View" on the row whose name matches the configured
-// assignment (e.g. "Research"), so the rest of the flow runs on the real
-// submission inbox (the table with the per-student ⋮ menus). No-op if we're
-// already on an inbox / some other page.
-async function enterAssignmentInbox(page: Page, assignmentName: string, onProgress: Logger): Promise<void> {
-  const isClassHome = await page.evaluate(() =>
-    /class\s*homepage|class\s*home|add assignment|now viewing/i.test(document.body.innerText || ""),
-  ).catch(() => false);
-  if (!isClassHome) return;
+// Reach the submission inbox from wherever the configured URL lands. Turnitin
+// redirects through two possible interstitials:
+//   1. Instructor home — a list of CLASSES → click the class name (class_label).
+//   2. Class home — a list of ASSIGNMENTS, each with a "View" action → click
+//      "View" on the row matching the configured assignment (assignment_label).
+// Then we're on the real inbox (the table with the per-student ⋮ menus). Each
+// hop is a no-op if that page isn't shown, so this is safe on any entry point.
+async function enterAssignmentInbox(
+  page: Page,
+  className: string,
+  assignmentName: string,
+  onProgress: Logger,
+): Promise<void> {
+  for (let hop = 0; hop < 3; hop++) {
+    if (await onInbox(page)) return;
 
-  await onProgress(`nav: class-home page detected — clicking "View" for assignment "${assignmentName}"`);
+    const body = await page.evaluate(() => document.body.innerText || "").catch(() => "");
 
-  const clicked = await page.evaluate((name) => {
-    const findView = (row: Element): HTMLElement | undefined =>
-      Array.from(row.querySelectorAll("a, button, input")).find((el) => {
-        const t = (el.textContent || (el as HTMLInputElement).value || "").trim();
-        return /^view$/i.test(t);
-      }) as HTMLElement | undefined;
-    const rows = Array.from(document.querySelectorAll("tr"));
-    // Row whose text contains the configured assignment name.
-    for (const row of rows) {
-      if (name && !(row.textContent || "").toLowerCase().includes(name.toLowerCase())) continue;
-      const v = findView(row);
-      if (v) { v.scrollIntoView({ block: "center" }); v.click(); return true; }
+    // 1) Class-list page (instructor homepage): click the class link by name.
+    if (/all classes|join account|quick submit|add class/i.test(body)) {
+      const clicked = await page.evaluate((name) => {
+        const links = Array.from(document.querySelectorAll("a")) as HTMLAnchorElement[];
+        const link =
+          links.find((a) => name && (a.textContent || "").trim().toLowerCase() === name.toLowerCase()) ||
+          links.find((a) => name && (a.textContent || "").toLowerCase().includes(name.toLowerCase()));
+        if (link) { link.scrollIntoView({ block: "center" }); link.click(); return true; }
+        return false;
+      }, className).catch(() => false);
+      if (clicked) {
+        await onProgress(`nav: class-list — opening class "${className}"`);
+        await waitAfterNav(page);
+        continue;
+      }
     }
-    return false;
-  }, assignmentName).catch(() => false);
 
-  if (!clicked) {
-    await onProgress(`[warn] nav: no "View" link found for assignment "${assignmentName}" on the class-home page`);
+    // 2) Class-home page (assignment list): click "View" on the assignment row.
+    if (/class\s*homepage|class\s*home|add assignment|now viewing/i.test(body)) {
+      const clicked = await page.evaluate((name) => {
+        const findView = (row: Element): HTMLElement | undefined =>
+          Array.from(row.querySelectorAll("a, button, input")).find((el) => {
+            const t = (el.textContent || (el as HTMLInputElement).value || "").trim();
+            return /^view$/i.test(t);
+          }) as HTMLElement | undefined;
+        for (const row of Array.from(document.querySelectorAll("tr"))) {
+          if (name && !(row.textContent || "").toLowerCase().includes(name.toLowerCase())) continue;
+          const v = findView(row);
+          if (v) { v.scrollIntoView({ block: "center" }); v.click(); return true; }
+        }
+        return false;
+      }, assignmentName).catch(() => false);
+      if (clicked) {
+        await onProgress(`nav: class-home — clicking "View" for assignment "${assignmentName}"`);
+        await waitAfterNav(page);
+        continue;
+      }
+      await onProgress(`[warn] nav: no "View" link found for assignment "${assignmentName}"`);
+      return;
+    }
+
+    // Not a known interstitial — assume we're already where we should be.
     return;
   }
+}
 
-  // Wait for the submission inbox to render after the View navigation.
+// True once the student submission inbox has rendered.
+async function onInbox(page: Page): Promise<boolean> {
+  if ((await collectMoreDotsBoxes(page, async () => {})).length > 0) return true;
+  if ((await page.locator("table tbody tr, [role=row]").count().catch(() => 0)) > 1) return true;
+  return page.evaluate(() =>
+    /submission list|student submissions|rows per page/i.test(document.body.innerText || ""),
+  ).catch(() => false);
+}
+
+async function waitAfterNav(page: Page): Promise<void> {
   await page.waitForLoadState("domcontentloaded", { timeout: 30_000 }).catch(() => {});
   await page.waitForLoadState("networkidle", { timeout: 20_000 }).catch(() => {});
-  const deadline = Date.now() + 25_000;
+  const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
-    const stillClassHome = await page.evaluate(() =>
-      /class\s*homepage|add assignment/i.test(document.body.innerText || ""),
+    if (await onInbox(page)) return;
+    // Stop early if a new interstitial (class list / class home) has rendered.
+    const next = await page.evaluate(() =>
+      /all classes|class\s*homepage|add assignment/i.test(document.body.innerText || ""),
     ).catch(() => false);
-    const ready =
-      !stillClassHome && (
-        (await collectMoreDotsBoxes(page, async () => {})).length > 0 ||
-        (await page.locator("table tbody tr, [role=row]").count().catch(() => 0)) > 1 ||
-        (await page.evaluate(() =>
-          /submission list|student submissions|rows per page|similar|ai wri/i.test(document.body.innerText || ""),
-        ).catch(() => false))
-      );
-    if (ready) { await onProgress(`nav: assignment inbox loaded: ${page.url().slice(0, 80)}`); return; }
+    if (next) return;
     await page.waitForTimeout(1_000);
   }
-  await onProgress("nav: inbox readiness timed out after View (continuing anyway)");
 }
 
 async function locateInAnyFrame(page: Page, selector: string): Promise<Frame | null> {
