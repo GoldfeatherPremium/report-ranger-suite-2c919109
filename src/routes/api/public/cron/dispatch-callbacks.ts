@@ -103,7 +103,7 @@ async function markDelivery(id: string, attempts: number, status: number, error:
     // Stop retrying — mark as a dead delivery by pushing next_attempt_at far out.
     update.next_attempt_at = new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString();
   }
-  await supabaseAdmin.from("job_callbacks").update(update).eq("id", id);
+  await supabaseAdmin.from("job_callbacks").update(update as never).eq("id", id);
 }
 
 async function withFreshReportUrl(payload: Record<string, unknown>, jobId: string) {

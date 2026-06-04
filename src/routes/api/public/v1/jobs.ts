@@ -62,7 +62,7 @@ export const Route = createFileRoute("/api/public/v1/jobs")({
         };
         const { data: job, error } = await supabaseAdmin
           .from("jobs")
-          .insert(insert)
+          .insert(insert as never)
           .select("id,status,external_ref,created_at")
           .single();
         if (error || !job) {
@@ -91,7 +91,7 @@ export const Route = createFileRoute("/api/public/v1/jobs")({
           .eq("api_client_id", auth.client.id)
           .order("created_at", { ascending: false })
           .limit(limit);
-        if (status) q = q.eq("status", status);
+        if (status) q = q.eq("status", status as never);
         if (since) q = q.gte("created_at", since);
 
         const { data, error } = await q;
