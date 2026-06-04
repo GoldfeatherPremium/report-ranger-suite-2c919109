@@ -274,10 +274,13 @@ export async function submitToTurnitin(opts: {
   await writeFile(filePath, fileBytes);
 
   let browser: Browser | null = null;
+  let ctxRef: BrowserContext | null = null;
+  const accountId = assignment.account_id;
+
   try {
     browser = await chromium.launch({ headless, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
 
-    const savedState = sessionCache.get(assignment.account_id);
+    const savedState = sessionCache.get(accountId);
     const ctx = await browser.newContext({
       acceptDownloads: true,
       userAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -285,6 +288,7 @@ export async function submitToTurnitin(opts: {
       locale: "en-US",
       ...(savedState ? { storageState: savedState } : {}),
     });
+    ctxRef = ctx;
     const page = await ctx.newPage();
 
     // ── Login / session reuse ──────────────────────────────────────────────────
@@ -546,6 +550,13 @@ export async function submitToTurnitin(opts: {
     return { similarityPdf, aiPdf, submissionId };
 
   } finally {
+    // Refresh the session cache with the latest cookies from this job so the
+    // NEXT job for the same account skips login entirely.
+    if (ctxRef) {
+      try {
+        sessionCache.set(accountId, await ctxRef.storageState());
+      } catch { /* ignore — stale cache is acceptable */ }
+    }
     await browser?.close().catch(() => {});
     await rm(tmp, { recursive: true, force: true }).catch(() => {});
   }
@@ -567,20 +578,42 @@ async function waitForAiWritingScore(
   while (Date.now() < deadline) {
     try { await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 }); } catch { /* ignore */ }
 
-    // Check if our row contains *% (the AI Writing ready indicator)
+    // Detect AI Writing score in our specific row.
+    // Valid AI scores: 0% (no AI), *% (low/special), 20-100% (AI detected).
+    // We find the "AI Wri" column index from the header to avoid confusing
+    // the AI Writing cell with the Similarity cell in the same row.
     const aiReady = await page.evaluate((title) => {
-      const rows = Array.from(document.querySelectorAll("tr, [role=row]"));
+      // Locate the AI Writing column index
+      let aiColIndex = -1;
+      const headerCells = Array.from(document.querySelectorAll(
+        "thead th, thead [role=columnheader], tr:first-child th, tr:first-child [role=columnheader]",
+      ));
+      for (let i = 0; i < headerCells.length; i++) {
+        if (/ai\s*wri/i.test(headerCells[i].textContent ?? "")) { aiColIndex = i; break; }
+      }
+
+      const rows = Array.from(document.querySelectorAll("tbody tr, tr:not(thead *), [role=row]"));
       for (const row of rows) {
-        const rowText = (row.textContent ?? "").toLowerCase();
-        if (!rowText.includes(title.toLowerCase())) continue;
-        // AI Writing shows as *% when ready; -- means still processing
+        if (!(row.textContent ?? "").toLowerCase().includes(title.toLowerCase())) continue;
+
+        if (aiColIndex >= 0) {
+          const cells = Array.from(row.querySelectorAll("td, [role=cell]"));
+          const cell = cells[aiColIndex];
+          if (cell) {
+            const t = (cell.textContent ?? "").trim();
+            // Ready: any value that is not "--", not empty, not a loading placeholder
+            return t !== "--" && t !== "" && t !== "..." && t !== "—";
+          }
+        }
+
+        // Fallback: *% is unambiguous — only the AI Writing column uses this format
         return /\*%/.test(row.textContent ?? "");
       }
       return false;
     }, titleBase).catch(() => false);
 
     if (aiReady) {
-      await onProgress("step7b: AI Writing score (*%) visible in our row");
+      await onProgress("step7b: AI Writing score visible in our row");
       return true;
     }
 
