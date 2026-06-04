@@ -6,6 +6,7 @@ import type { AssignmentInfo } from "./supabase.js";
 import { aiDetectPageState } from "./ai-resolver.js";
 import { findElementWithAI } from "./ai-helper.js";
 import { locateByVision, visionAvailable } from "./resolve/vision.js";
+import { visionAgent } from "./resolve/agent.js";
 import { settle } from "./resolve/resolver.js";
 import { uploadDebugScreenshot } from "./supabase.js";
 
@@ -508,6 +509,20 @@ export async function submitToTurnitin(opts: {
           await page.keyboard.press("Escape").catch(() => {});
           await page.waitForTimeout(500);
         }
+      }
+
+      // ── Tier 3: Gemini "computer use" agent — last resort before failing ──────
+      if (!submitFileOpened && visionAvailable()) {
+        await onProgress(`step1: Tier-3 agent attempting row #${rowIndex + 1}`);
+        const ok = await visionAgent(
+          page,
+          `This is a Turnitin instructor "Submission list" table. Open the three-dot ` +
+          `vertical "⋮ More actions" menu on row ${rowIndex + 1} (counting from the top), ` +
+          `then click "Resubmit file". The goal is achieved when the file upload dialog appears.`,
+          () => uploadDialogReady(page),
+          onProgress,
+        );
+        if (ok) { await onProgress("step1: Tier-3 agent opened the upload dialog"); submitFileOpened = true; }
       }
 
       if (!submitFileOpened) {

@@ -1,26 +1,19 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import type { Page } from "playwright";
+import { nextGeminiClient, geminiAvailable } from "./gemini.js";
 
 // Tier-2 element resolver: locate a target on screen by VISION when DOM
-// automation fails. Reuses the existing Gemini key pool (GEMINI_API_KEYS or
-// GEMINI_API_KEY) with round-robin rotation. All errors are swallowed — a
-// missing/broken key must never crash a job; it just means "no vision result".
+// automation fails. Reuses the shared Gemini key pool with round-robin
+// rotation. All errors are swallowed — a missing/broken key must never crash a
+// job; it just means "no vision result".
 
 type Logger = (m: string) => Promise<void>;
 export type VisionPoint = { x: number; y: number; confidence: number };
 
-const keys = (process.env.GEMINI_API_KEYS ?? process.env.GEMINI_API_KEY ?? "")
-  .split(",").map((k) => k.trim()).filter(Boolean)
-  .map((k) => new GoogleGenerativeAI(k));
-
-let keyIndex = 0;
-function nextClient(): GoogleGenerativeAI | null {
-  if (!keys.length) return null;
-  return keys[keyIndex++ % keys.length];
-}
+const nextClient = nextGeminiClient;
 
 export function visionAvailable(): boolean {
-  return keys.length > 0;
+  return geminiAvailable();
 }
 
 /**
