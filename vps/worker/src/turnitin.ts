@@ -310,6 +310,7 @@ async function runStepRecovery(
 export type SubmissionResult = {
   pdf: Buffer;
   submissionId: string | null;
+  similarityPercent: number | null;
 };
 
 export async function submitToTurnitin(opts: {
