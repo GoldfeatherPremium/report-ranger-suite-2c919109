@@ -441,7 +441,6 @@ export type Database = {
       turnitin_instructor_assignments: {
         Row: {
           class_id: string
-          cooldown_hours: number
           created_at: string
           id: string
           is_active: boolean
@@ -451,7 +450,6 @@ export type Database = {
         }
         Insert: {
           class_id: string
-          cooldown_hours?: number
           created_at?: string
           id?: string
           is_active?: boolean
@@ -461,7 +459,6 @@ export type Database = {
         }
         Update: {
           class_id?: string
-          cooldown_hours?: number
           created_at?: string
           id?: string
           is_active?: boolean

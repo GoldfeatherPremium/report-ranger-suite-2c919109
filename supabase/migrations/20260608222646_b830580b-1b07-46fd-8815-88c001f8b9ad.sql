@@ -1,0 +1,1 @@
+ALTER TABLE public.turnitin_instructor_assignments DROP COLUMN IF EXISTS cooldown_hours;

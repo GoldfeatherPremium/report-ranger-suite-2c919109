@@ -18,7 +18,7 @@ export const Route = createFileRoute("/_authenticated/admin/instructor/$accountI
 
 type Assignment = {
   id: string; class_id: string; label: string; submit_url: string | null;
-  cooldown_hours: number; is_active: boolean; created_at: string;
+  is_active: boolean; created_at: string;
   last_used_at?: string | null;
 };
 
@@ -45,7 +45,7 @@ function Page() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("turnitin_instructor_assignments" as never)
-        .select("id,class_id,label,submit_url,cooldown_hours,is_active,created_at")
+        .select("id,class_id,label,submit_url,is_active,created_at")
         .eq("class_id", classId)
         .order("created_at");
       if (error) throw error;
@@ -108,27 +108,24 @@ function Page() {
             <tr>
               <th className="px-4 py-3">Label</th>
               <th className="px-4 py-3">Submit URL</th>
-              <th className="px-4 py-3">Cooldown</th>
               <th className="px-4 py-3">Availability</th>
               <th className="px-4 py-3"></th>
             </tr>
           </thead>
           <tbody>
-            {assignments.length === 0 && <tr><td colSpan={5} className="px-4 py-10 text-center text-muted-foreground">No assignments yet.</td></tr>}
+            {assignments.length === 0 && <tr><td colSpan={4} className="px-4 py-10 text-center text-muted-foreground">No assignments yet.</td></tr>}
             {assignments.map((a) => {
-              const free = !a.last_used_at || (Date.now() - new Date(a.last_used_at).getTime()) > a.cooldown_hours * 3_600_000;
               return (
                 <tr key={a.id} className="border-b last:border-0 hover:bg-accent/30">
                   <td className="px-4 py-3 font-medium">{a.label}</td>
                   <td className="px-4 py-3 truncate text-xs text-muted-foreground max-w-xs">{a.submit_url || "—"}</td>
-                  <td className="px-4 py-3">{a.cooldown_hours}h</td>
                   <td className="px-4 py-3">
                     {!a.is_active ? (
                       <span className="text-xs text-muted-foreground">Disabled</span>
-                    ) : free ? (
-                      <span className="text-xs text-success">Free now</span>
+                    ) : a.last_used_at ? (
+                      <span className="text-xs text-muted-foreground">Last used {formatDistanceToNow(new Date(a.last_used_at))} ago</span>
                     ) : (
-                      <span className="text-xs text-warning">Used {formatDistanceToNow(new Date(a.last_used_at!))} ago</span>
+                      <span className="text-xs text-success">Available</span>
                     )}
                   </td>
                   <td className="px-4 py-3 text-right">
@@ -161,7 +158,6 @@ function Page() {
 function AddAssignmentDialog({ classId, onDone }: { classId: string; onDone: () => void }) {
   const [label, setLabel] = useState("");
   const [submitUrl, setSubmitUrl] = useState("");
-  const [cooldown, setCooldown] = useState(24);
   const [saving, setSaving] = useState(false);
 
   async function submit(e: React.FormEvent) {
@@ -170,7 +166,7 @@ function AddAssignmentDialog({ classId, onDone }: { classId: string; onDone: () 
     setSaving(true);
     const { error } = await supabase
       .from("turnitin_instructor_assignments" as never)
-      .insert({ class_id: classId, label, submit_url: submitUrl || null, cooldown_hours: cooldown } as never);
+      .insert({ class_id: classId, label, submit_url: submitUrl || null } as never);
     setSaving(false);
     if (error) { toast.error(error.message); return; }
     toast.success("Assignment added"); onDone();
@@ -193,7 +189,6 @@ function AddAssignmentDialog({ classId, onDone }: { classId: string; onDone: () 
             The worker logs in and navigates here directly — no other steps.
           </p>
         </div>
-        <div><Label>Cooldown (hours)</Label><Input type="number" min={1} value={cooldown} onChange={(e) => setCooldown(Number(e.target.value))} /></div>
         <DialogFooter><Button type="submit" disabled={saving}>{saving ? "Saving…" : "Save assignment"}</Button></DialogFooter>
       </form>
     </DialogContent>
