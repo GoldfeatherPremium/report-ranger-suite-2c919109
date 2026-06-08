@@ -41,11 +41,11 @@ export type InstructorAccount = {
 
 // A single recorded action in a learned flow / training step.
 export type FlowAction = {
-  type: "click" | "fill" | "press" | "goto" | "wait" | "waittext" | "scroll" | "upload";
+  type: "click" | "clicktext" | "fill" | "press" | "goto" | "wait" | "waittext" | "scroll" | "upload";
   selector?: string;  // durable selector for replay
   frame?: number;     // frame index the element lived in
   text?: string;      // visible text of the element (for human readability / fallback)
-  value?: string;     // fill value, url, ms, etc.
+  value?: string;     // fill value, url, ms, or a <<PLACEHOLDER>> resolved at replay
   key?: string;       // key name for "press"
   note?: string;      // free-form operator note
 };

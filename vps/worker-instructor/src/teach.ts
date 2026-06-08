@@ -1,12 +1,25 @@
 import "./load-env.js";
 import * as readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
+import { existsSync, mkdirSync } from "node:fs";
+import { dirname, resolve, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   getInstructorAccount, createSession, finishSession, uploadScreenshot,
   recordStep, saveFlow, log, type FlowAction,
 } from "./supabase.js";
-import { launch, login, screenshot, extractElements, metaOf, disposeAll, type DetectedElement } from "./browser.js";
+import {
+  launch, login, screenshot, extractElements, metaOf, disposeAll,
+  isLoginFormPresent, saveSession, homeUrlFor, type DetectedElement,
+} from "./browser.js";
 import type { Page } from "playwright";
+
+// Where the reusable per-account session (cookies) is stored on disk.
+function sessionFile(accountId: string): string {
+  const dir = resolve(dirname(fileURLToPath(import.meta.url)), "..", ".sessions");
+  mkdirSync(dir, { recursive: true });
+  return join(dir, `${accountId}.json`);
+}
 
 const WORKER_ID = process.env.WORKER_ID ?? `instructor-teach-${process.pid}`;
 const HEADLESS = (process.env.HEADLESS ?? "true") === "true";
@@ -18,6 +31,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const HELP = `
 Commands (act on the numbered elements shown above):
   click <i>              click element #i
+  clickclass <i>         click class link #i, recorded as the configured class name
+  clickassign <i>        click assignment link #i, recorded as the configured assignment name
+  clicktext <text...>    click the element whose visible text matches
   fill <i> <value...>    type a value into element #i
   upload <i> [path]      attach a file to file-input #i (default: TEACH_SAMPLE_FILE)
   press <Key>            press a keyboard key (e.g. press Enter)
@@ -39,15 +55,32 @@ async function main() {
   console.log(`account : ${account.label} <${account.email}>`);
   console.log(`headless: ${HEADLESS}\n`);
 
-  const { browser, page } = await launch(HEADLESS);
+  const sessionPath = sessionFile(account.id);
+  const haveSession = existsSync(sessionPath);
+  const { browser, context, page } = await launch(HEADLESS, haveSession ? sessionPath : undefined);
   const sessionId = await createSession(account.id, WORKER_ID, `teach ${account.label}`);
   await log(WORKER_ID, "info", `teaching session ${sessionId} for ${account.label}`);
 
-  try {
-    await login(page, account, (m) => console.log(`  · ${m}`));
-  } catch (e) {
-    console.error(`login failed: ${e instanceof Error ? e.message : String(e)}`);
-    console.error(`Continuing anyway — you can 'goto' the right URL or inspect the captured screen.`);
+  // Reuse a saved session if it's still valid; otherwise log in fresh and save it.
+  let loggedIn = false;
+  if (haveSession) {
+    try {
+      await page.goto(homeUrlFor(account.login_url), { waitUntil: "domcontentloaded", timeout: 60_000 });
+      await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {});
+      loggedIn = !(await isLoginFormPresent(page));
+      console.log(loggedIn ? "  · reused saved session — login skipped" : "  · saved session expired — logging in");
+    } catch { /* fall through to a fresh login */ }
+  }
+  if (!loggedIn) {
+    try { await login(page, account, (m) => console.log(`  · ${m}`)); loggedIn = true; }
+    catch (e) {
+      console.error(`login failed: ${e instanceof Error ? e.message : String(e)}`);
+      console.error("Continuing anyway — use 'relogin' or 'goto'.");
+    }
+  }
+  if (loggedIn) {
+    try { await saveSession(context, sessionPath); console.log("  · session saved (login will be skipped next time)"); }
+    catch (e) { console.log(`  ⚠️  could not save session: ${e instanceof Error ? e.message : e}`); }
   }
 
   const rl = readline.createInterface({ input, output });
@@ -81,8 +114,11 @@ async function main() {
         continue;
       }
       if (cmd === "relogin") {
-        try { await login(page, account, (m) => console.log(`  · ${m}`)); }
-        catch (e) { console.log(`  ⚠️  relogin failed: ${e instanceof Error ? e.message : String(e)}`); }
+        try {
+          await login(page, account, (m) => console.log(`  · ${m}`));
+          await saveSession(context, sessionPath).catch(() => {});
+          console.log("  · session saved");
+        } catch (e) { console.log(`  ⚠️  relogin failed: ${e instanceof Error ? e.message : String(e)}`); }
         await disposeAll(els);
         continue;
       }
@@ -160,6 +196,26 @@ async function execute(
         if (!el) return { action: null, error: `no element #${rest[0]}` };
         await el.handle.click({ timeout: 15_000 });
         return { action: { type: "click", selector: el.selector, frame: el.frame, text: el.text } };
+      }
+      case "clickclass":
+      case "clickassign": {
+        const el = pick(rest[0]);
+        if (!el) return { action: null, error: `no element #${rest[0]}` };
+        await el.handle.click({ timeout: 15_000 });
+        // Click concretely while teaching, but record a dynamic placeholder so
+        // replay clicks whatever class/assignment the admin configured.
+        const value = cmd === "clickclass" ? "<<CLASS_LABEL>>" : "<<ASSIGNMENT_LABEL>>";
+        return { action: { type: "clicktext", value, frame: el.frame, text: el.text } };
+      }
+      case "clicktext": {
+        const text = rest.join(" ");
+        if (!text) return { action: null, error: "clicktext needs some text" };
+        const needle = text.toLowerCase();
+        const el = els.find((e) => e.text.toLowerCase() === needle)
+          ?? els.find((e) => e.text.toLowerCase().includes(needle));
+        if (!el) return { action: null, error: `no visible element with text "${text}"` };
+        await el.handle.click({ timeout: 15_000 });
+        return { action: { type: "clicktext", value: text, selector: el.selector, frame: el.frame, text: el.text } };
       }
       case "fill": {
         const el = pick(rest[0]);

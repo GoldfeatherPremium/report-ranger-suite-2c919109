@@ -23,7 +23,10 @@ const MAX_ELEMENTS = 160;
 const REAL_UA =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
-export async function launch(headless: boolean): Promise<{ browser: Browser; context: BrowserContext; page: Page }> {
+export async function launch(
+  headless: boolean,
+  storageStatePath?: string,
+): Promise<{ browser: Browser; context: BrowserContext; page: Page }> {
   const browser = await chromium.launch({
     headless,
     args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"],
@@ -33,10 +36,26 @@ export async function launch(headless: boolean): Promise<{ browser: Browser; con
     userAgent: REAL_UA,
     viewport: { width: 1366, height: 900 },
     locale: "en-US",
+    ...(storageStatePath ? { storageState: storageStatePath } : {}),
   });
   const page = await context.newPage();
   page.setDefaultTimeout(30_000);
   return { browser, context, page };
+}
+
+// True if a login form is visible (i.e. we are NOT logged in).
+export async function isLoginFormPresent(page: Page): Promise<boolean> {
+  return (await locateInAnyFrame(page, LOGIN.email)) != null;
+}
+
+// Persist cookies/localStorage so the next run can skip login.
+export async function saveSession(context: BrowserContext, path: string): Promise<void> {
+  await context.storageState({ path });
+}
+
+// The logged-in instructor home page for a given login URL's host.
+export function homeUrlFor(loginUrl: string): string {
+  try { return new URL(loginUrl).origin + "/t_home.asp?lang=en_us"; } catch { return loginUrl; }
 }
 
 // Best-effort login with retries. Turnitin often serves a transient error /
