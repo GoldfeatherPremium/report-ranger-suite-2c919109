@@ -70,11 +70,14 @@ function Page() {
                   </span>
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <Button asChild variant="ghost" size="sm">
-                    <Link to="/admin/instructor/$accountId" params={{ accountId: a.id }}>
-                      Classes <ChevronRight className="ml-1 h-4 w-4" />
-                    </Link>
-                  </Button>
+                  <div className="flex items-center justify-end gap-1">
+                    <Button asChild variant="ghost" size="sm">
+                      <Link to="/admin/instructor/$accountId" params={{ accountId: a.id }}>
+                        Classes <ChevronRight className="ml-1 h-4 w-4" />
+                      </Link>
+                    </Button>
+                    <DeleteAccountButton account={a} onDeleted={() => refetch()} />
+                  </div>
                 </td>
               </tr>
             ))}
@@ -82,6 +85,45 @@ function Page() {
         </table>
       </div>
     </div>
+  );
+}
+
+function DeleteAccountButton({ account, onDeleted }: { account: Account; onDeleted: () => void }) {
+  const [deleting, setDeleting] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  async function handleDelete() {
+    setDeleting(true);
+    const { error } = await supabase.from("turnitin_instructor_accounts" as never).delete().eq("id", account.id);
+    setDeleting(false);
+    if (error) { toast.error(error.message); return; }
+    toast.success("Account deleted");
+    setOpen(false);
+    onDeleted();
+  }
+
+  return (
+    <AlertDialog open={open} onOpenChange={setOpen}>
+      <AlertDialogTrigger asChild>
+        <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive">
+          <Trash2 className="h-4 w-4" />
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete "{account.label}"?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This permanently removes the instructor account ({account.email}) and all of its classes and assignments. Jobs that already submitted under this account will lose their references. This cannot be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+          <AlertDialogAction onClick={(e) => { e.preventDefault(); handleDelete(); }} disabled={deleting} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+            {deleting ? "Deleting…" : "Delete"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 
