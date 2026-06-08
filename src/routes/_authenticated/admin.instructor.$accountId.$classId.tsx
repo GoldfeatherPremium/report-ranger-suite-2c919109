@@ -108,27 +108,24 @@ function Page() {
             <tr>
               <th className="px-4 py-3">Label</th>
               <th className="px-4 py-3">Submit URL</th>
-              <th className="px-4 py-3">Cooldown</th>
               <th className="px-4 py-3">Availability</th>
               <th className="px-4 py-3"></th>
             </tr>
           </thead>
           <tbody>
-            {assignments.length === 0 && <tr><td colSpan={5} className="px-4 py-10 text-center text-muted-foreground">No assignments yet.</td></tr>}
+            {assignments.length === 0 && <tr><td colSpan={4} className="px-4 py-10 text-center text-muted-foreground">No assignments yet.</td></tr>}
             {assignments.map((a) => {
-              const free = !a.last_used_at || (Date.now() - new Date(a.last_used_at).getTime()) > a.cooldown_hours * 3_600_000;
               return (
                 <tr key={a.id} className="border-b last:border-0 hover:bg-accent/30">
                   <td className="px-4 py-3 font-medium">{a.label}</td>
                   <td className="px-4 py-3 truncate text-xs text-muted-foreground max-w-xs">{a.submit_url || "—"}</td>
-                  <td className="px-4 py-3">{a.cooldown_hours}h</td>
                   <td className="px-4 py-3">
                     {!a.is_active ? (
                       <span className="text-xs text-muted-foreground">Disabled</span>
-                    ) : free ? (
-                      <span className="text-xs text-success">Free now</span>
+                    ) : a.last_used_at ? (
+                      <span className="text-xs text-muted-foreground">Last used {formatDistanceToNow(new Date(a.last_used_at))} ago</span>
                     ) : (
-                      <span className="text-xs text-warning">Used {formatDistanceToNow(new Date(a.last_used_at!))} ago</span>
+                      <span className="text-xs text-success">Available</span>
                     )}
                   </td>
                   <td className="px-4 py-3 text-right">
