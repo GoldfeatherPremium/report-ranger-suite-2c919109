@@ -16,12 +16,24 @@ const LOGIN = {
 const INTERACTIVE = "a, button, input, textarea, select, [role=button], [role=link], [role=menuitem], [onclick], [tabindex]";
 const MAX_ELEMENTS = 160;
 
+// Present as a normal desktop Chrome. Playwright's default headless UA contains
+// "HeadlessChrome", which Turnitin's CloudFront WAF blocks with a 403 "Request
+// blocked" page (no login form → looks like a broken selector). A realistic UA +
+// viewport + locale is what the student worker uses to get through.
+const REAL_UA =
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+
 export async function launch(headless: boolean): Promise<{ browser: Browser; context: BrowserContext; page: Page }> {
   const browser = await chromium.launch({
     headless,
     args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"],
   });
-  const context = await browser.newContext({ viewport: { width: 1366, height: 900 } });
+  const context = await browser.newContext({
+    acceptDownloads: true,
+    userAgent: REAL_UA,
+    viewport: { width: 1366, height: 900 },
+    locale: "en-US",
+  });
   const page = await context.newPage();
   page.setDefaultTimeout(30_000);
   return { browser, context, page };
