@@ -18,7 +18,7 @@ export const Route = createFileRoute("/_authenticated/admin/instructor/$accountI
 
 type Assignment = {
   id: string; class_id: string; label: string; submit_url: string | null;
-  cooldown_hours: number; is_active: boolean; created_at: string;
+  is_active: boolean; created_at: string;
   last_used_at?: string | null;
 };
 
