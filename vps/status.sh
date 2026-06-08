@@ -1,26 +1,14 @@
 #!/usr/bin/env bash
-# Worker status & flow-settings inspector for BOTH student and instructor workers.
+# Worker status & flow-settings inspector for the student worker.
 # Run from anywhere on the VPS: bash /root/report-ranger-suite/vps/status.sh
 #
 # Usage:
-#   bash status.sh              # show both workers
-#   bash status.sh --student    # student worker only
-#   bash status.sh --instructor # instructor worker only
+#   bash status.sh              # show the student worker
 
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 WORKER_DIR="$REPO_DIR/vps/worker"
-INSTRUCTOR_DIR="$REPO_DIR/vps/worker-instructor"
-
-SHOW_STUDENT=1
-SHOW_INSTRUCTOR=1
-for arg in "$@"; do
-  case "$arg" in
-    --student)    SHOW_INSTRUCTOR=0 ;;
-    --instructor) SHOW_STUDENT=0 ;;
-  esac
-done
 
 RED='\033[0;31m'; YEL='\033[1;33m'; GRN='\033[0;32m'; CYN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
@@ -95,38 +83,21 @@ print_service_status() {
 }
 
 # ── 1. Student worker ────────────────────────────────────────────────────────
-if [[ "$SHOW_STUDENT" -eq 1 ]]; then
-  echo ""
-  hdr "STUDENT WORKER (Similarity-only pipeline)"
-  print_worker_settings "$WORKER_DIR/.env" "student"
-  echo ""
-  hdr "STUDENT SERVICE STATUS"
-  print_service_status "turnitin-worker"
-fi
+echo ""
+hdr "STUDENT WORKER (Similarity-only pipeline)"
+print_worker_settings "$WORKER_DIR/.env" "student"
+echo ""
+hdr "STUDENT SERVICE STATUS"
+print_service_status "turnitin-worker"
 
-# ── 2. Instructor worker ─────────────────────────────────────────────────────
-if [[ "$SHOW_INSTRUCTOR" -eq 1 ]]; then
-  echo ""
-  hdr "INSTRUCTOR WORKER (Similarity + AI pipeline)"
-  print_worker_settings "$INSTRUCTOR_DIR/.env" "instructor"
-  echo ""
-  hdr "INSTRUCTOR SERVICE STATUS"
-  print_service_status "turnitin-instructor-worker"
-fi
-
-# ── 3. Code version ──────────────────────────────────────────────────────────
+# ── 2. Code version ──────────────────────────────────────────────────────────
 echo ""
 hdr "CODE VERSION"
 cd "$REPO_DIR"
 echo -e "  Branch  : $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
 echo -e "  Commit  : $(git rev-parse --short HEAD 2>/dev/null || echo '?')"
 
-if [[ "$SHOW_STUDENT" -eq 1 ]]; then
-  echo -e "  Student built   : $(stat -c '%y' "$WORKER_DIR/dist/index.js" 2>/dev/null | cut -d. -f1 || echo 'not built')"
-fi
-if [[ "$SHOW_INSTRUCTOR" -eq 1 ]]; then
-  echo -e "  Instructor built: $(stat -c '%y' "$INSTRUCTOR_DIR/dist/index.js" 2>/dev/null | cut -d. -f1 || echo 'not built')"
-fi
+echo -e "  Student built   : $(stat -c '%y' "$WORKER_DIR/dist/index.js" 2>/dev/null | cut -d. -f1 || echo 'not built')"
 
 REMOTE_SHA=$(git rev-parse "origin/$(git rev-parse --abbrev-ref HEAD)" 2>/dev/null || echo '')
 LOCAL_SHA=$(git rev-parse HEAD 2>/dev/null || echo '')
@@ -136,7 +107,7 @@ else
   echo -e "  Up to date with remote"
 fi
 
-# ── 4. Supabase checks ───────────────────────────────────────────────────────
+# ── 3. Supabase checks ───────────────────────────────────────────────────────
 ENV_FILE="$WORKER_DIR/.env"
 if [[ ! -f "$ENV_FILE" ]]; then
   echo -e "${YEL}Skipping DB checks — .env not found${NC}"
@@ -157,13 +128,12 @@ AUTH=(-H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABAS
 db_get() { curl -sf "${AUTH[@]}" -H "Accept: application/json" "$API/$1" 2>/dev/null || echo "[]"; }
 
 # ── Student slots ─────────────────────────────────────────────────────────────
-if [[ "$SHOW_STUDENT" -eq 1 ]]; then
-  echo ""
-  hdr "STUDENT SLOTS"
-  SLOTS=$(db_get "turnitin_slots?select=id,label,submit_url,cooldown_hours,is_active&order=created_at")
-  COUNT=$(echo "$SLOTS" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d))" 2>/dev/null || echo "?")
-  echo -e "  Total slots: ${BOLD}$COUNT${NC}"
-  echo "$SLOTS" | python3 -c "
+echo ""
+hdr "STUDENT SLOTS"
+SLOTS=$(db_get "turnitin_slots?select=id,label,submit_url,cooldown_hours,is_active&order=created_at")
+COUNT=$(echo "$SLOTS" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d))" 2>/dev/null || echo "?")
+echo -e "  Total slots: ${BOLD}$COUNT${NC}"
+echo "$SLOTS" | python3 -c "
 import sys, json
 slots = json.load(sys.stdin)
 for s in slots:
@@ -172,10 +142,10 @@ for s in slots:
     print(f'  [{active}] {s[\"label\"]}  cooldown={s[\"cooldown_hours\"]}h  url={url}')
 " 2>/dev/null || echo "  (could not parse slots)"
 
-  echo ""
-  hdr "STUDENT SLOT USAGE (currently in use)"
-  USAGE=$(db_get "turnitin_slot_usage?select=slot_id,job_id,submitted_at,freed_at&freed_at=is.null&order=submitted_at.desc")
-  echo "$USAGE" | python3 -c "
+echo ""
+hdr "STUDENT SLOT USAGE (currently in use)"
+USAGE=$(db_get "turnitin_slot_usage?select=slot_id,job_id,submitted_at,freed_at&freed_at=is.null&order=submitted_at.desc")
+echo "$USAGE" | python3 -c "
 import sys, json
 rows = json.load(sys.stdin)
 if not rows:
@@ -184,42 +154,10 @@ else:
     for r in rows:
         print(f\"  slot={r['slot_id'][:8]}...  job={r['job_id'][:8]}...  since={r['submitted_at'][:19]}\")
 " 2>/dev/null || echo "  (could not parse usage)"
-fi
 
-# ── Instructor assignments ───────────────────────────────────────────────────
-if [[ "$SHOW_INSTRUCTOR" -eq 1 ]]; then
-  echo ""
-  hdr "INSTRUCTOR ASSIGNMENTS"
-  ASSIGNMENTS=$(db_get "turnitin_instructor_assignments?select=id,label,submit_url,cooldown_hours,is_active,turnitin_instructor_classes(label,account_id)&order=created_at")
-  COUNT=$(echo "$ASSIGNMENTS" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d))" 2>/dev/null || echo "?")
-  echo -e "  Total assignments: ${BOLD}$COUNT${NC}"
-  echo "$ASSIGNMENTS" | python3 -c "
-import sys, json
-rows = json.load(sys.stdin)
-for r in rows:
-    active = '✓ active' if r.get('is_active') else '✗ disabled'
-    cls = r.get('turnitin_instructor_classes', {})
-    url = (r.get('submit_url') or '—')[:60]
-    print(f\"  [{active}] {r['label']}  class={cls.get('label','?')}  cooldown={r.get('cooldown_hours',24)}h  url={url}\")
-" 2>/dev/null || echo "  (could not parse assignments)"
-
-  echo ""
-  hdr "INSTRUCTOR SLOT USAGE (currently in use)"
-  USAGE=$(db_get "turnitin_instructor_slot_usage?select=assignment_id,job_id,submitted_at,freed_at&freed_at=is.null&order=submitted_at.desc")
-  echo "$USAGE" | python3 -c "
-import sys, json
-rows = json.load(sys.stdin)
-if not rows:
-    print('  All assignments are free')
-else:
-    for r in rows:
-        print(f\"  assignment={r['assignment_id'][:8]}...  job={r['job_id'][:8]}...  since={r['submitted_at'][:19]}\")
-" 2>/dev/null || echo "  (could not parse usage)"
-fi
-
-# ── Jobs (both pipelines) ─────────────────────────────────────────────────────
+# ── Jobs ──────────────────────────────────────────────────────────────────────
 echo ""
-hdr "RECENT JOBS (both pipelines)"
+hdr "RECENT JOBS"
 JOBS=$(db_get "jobs?select=id,status,original_name,pipeline,attempts,max_attempts,error,created_at,turnitin_submission_id,ai_report_status&order=created_at.desc&limit=20")
 echo "$JOBS" | python3 -c "
 import sys, json
@@ -237,10 +175,9 @@ print('  Recent jobs:')
 for j in jobs[:15]:
     name = (j.get('original_name') or '?')[:30]
     pl   = j.get('pipeline','?')
-    ai   = f\"  ai={j.get('ai_report_status','?')}\" if pl == 'instructor' else ''
     err  = ('  ERR: ' + j['error'][:50]) if j.get('error') else ''
     sub  = '  [submitted]' if j.get('turnitin_submission_id') else ''
-    print(f\"  [{pl:10}] {j['status']:12}  {j['attempts']}/{j['max_attempts']} att  {name}{sub}{ai}{err}\")
+    print(f\"  [{pl:10}] {j['status']:12}  {j['attempts']}/{j['max_attempts']} att  {name}{sub}{err}\")
 " 2>/dev/null || echo "  (could not parse jobs)"
 
 # ── Worker health ────────────────────────────────────────────────────────────
@@ -283,7 +220,6 @@ for r in reversed(rows):
 hr
 echo ""
 echo -e "  Full live logs  : ${BOLD}journalctl -u turnitin-worker -f${NC}"
-echo -e "                   ${BOLD}journalctl -u turnitin-instructor-worker -f${NC}"
-echo -e "  Restart workers : ${BOLD}systemctl restart turnitin-worker turnitin-instructor-worker${NC}"
+echo -e "  Restart worker  : ${BOLD}systemctl restart turnitin-worker${NC}"
 echo -e "  Update code     : ${BOLD}sudo bash $REPO_DIR/vps/update.sh${NC}"
 echo ""

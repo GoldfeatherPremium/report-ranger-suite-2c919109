@@ -1,16 +1,13 @@
 #!/usr/bin/env bash
-# Auto-update both Turnitin workers from git.
+# Auto-update the Turnitin student worker from git.
 # Run by the turnitin-worker-update.timer every few minutes. It only rebuilds
-# and restarts workers when the tracked branch actually has a new commit, so
+# and restarts the worker when the tracked branch actually has a new commit, so
 # an unchanged repo is a cheap no-op with zero downtime.
-#
-# NOTE: This script now handles BOTH the student worker and the instructor worker.
 
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 WORKER_DIR="$REPO_DIR/vps/worker"
-INSTRUCTOR_DIR="$REPO_DIR/vps/worker-instructor"
 
 cd "$REPO_DIR"
 
@@ -45,22 +42,4 @@ systemctl daemon-reload
 systemctl restart turnitin-worker
 echo "auto-update: student worker restarted"
 
-# ── Instructor worker ──────────────────────────────────────────────────────────
-if [[ -f "$INSTRUCTOR_DIR/.env" ]]; then
-  echo "auto-update: rebuilding instructor worker..."
-  cd "$INSTRUCTOR_DIR"
-  npm install --prefer-offline
-  npm run build
-  npm prune --omit=dev
-
-  sed "s|__WORKER_DIR__|$INSTRUCTOR_DIR|g" "$REPO_DIR/vps/turnitin-instructor-worker.service" \
-    > /etc/systemd/system/turnitin-instructor-worker.service
-
-  systemctl daemon-reload
-  systemctl restart turnitin-instructor-worker
-  echo "auto-update: instructor worker restarted"
-else
-  echo "auto-update: instructor worker skipped (no .env found at $INSTRUCTOR_DIR/.env)"
-fi
-
-echo "auto-update: redeployed both workers to $REMOTE"
+echo "auto-update: redeployed student worker to $REMOTE"
