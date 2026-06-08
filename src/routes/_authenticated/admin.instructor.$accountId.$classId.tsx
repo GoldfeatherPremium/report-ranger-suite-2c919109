@@ -158,7 +158,6 @@ function Page() {
 function AddAssignmentDialog({ classId, onDone }: { classId: string; onDone: () => void }) {
   const [label, setLabel] = useState("");
   const [submitUrl, setSubmitUrl] = useState("");
-  const [cooldown, setCooldown] = useState(24);
   const [saving, setSaving] = useState(false);
 
   async function submit(e: React.FormEvent) {
@@ -167,7 +166,7 @@ function AddAssignmentDialog({ classId, onDone }: { classId: string; onDone: () 
     setSaving(true);
     const { error } = await supabase
       .from("turnitin_instructor_assignments" as never)
-      .insert({ class_id: classId, label, submit_url: submitUrl || null, cooldown_hours: cooldown } as never);
+      .insert({ class_id: classId, label, submit_url: submitUrl || null } as never);
     setSaving(false);
     if (error) { toast.error(error.message); return; }
     toast.success("Assignment added"); onDone();
@@ -190,7 +189,6 @@ function AddAssignmentDialog({ classId, onDone }: { classId: string; onDone: () 
             The worker logs in and navigates here directly — no other steps.
           </p>
         </div>
-        <div><Label>Cooldown (hours)</Label><Input type="number" min={1} value={cooldown} onChange={(e) => setCooldown(Number(e.target.value))} /></div>
         <DialogFooter><Button type="submit" disabled={saving}>{saving ? "Saving…" : "Save assignment"}</Button></DialogFooter>
       </form>
     </DialogContent>
