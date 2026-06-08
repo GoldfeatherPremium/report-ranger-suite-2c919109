@@ -45,7 +45,7 @@ function Page() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("turnitin_instructor_assignments" as never)
-        .select("id,class_id,label,submit_url,cooldown_hours,is_active,created_at")
+        .select("id,class_id,label,submit_url,is_active,created_at")
         .eq("class_id", classId)
         .order("created_at");
       if (error) throw error;
