@@ -5,8 +5,8 @@
 #   1. Clones the new repo into a fresh directory (default: /opt/dochub-new).
 #   2. Copies your existing worker/.env secrets across (they are gitignored,
 #      so a fresh clone never includes them).
-#   3. Rebuilds both workers (npm install + Playwright Chromium + tsc build).
-#   4. Re-points the systemd units — both workers AND the auto-update timer —
+#   3. Rebuilds the worker (npm install + Playwright Chromium + tsc build).
+#   4. Re-points the systemd units — the worker AND the auto-update timer —
 #      at the new clone, so all future self-updates pull from the new repo.
 #   5. Restarts the services.
 #
@@ -76,7 +76,6 @@ echo ""
 step "Stopping auto-update timer and workers"
 systemctl stop turnitin-worker-update.timer 2>/dev/null || true
 systemctl stop turnitin-worker 2>/dev/null || true
-systemctl stop turnitin-instructor-worker 2>/dev/null || true
 
 # ── clone (or refresh) the new repo ───────────────────────────────────────────
 if [[ -d "$NEW_DIR/.git" ]]; then
@@ -92,7 +91,6 @@ else
 fi
 
 NEW_WORKER_DIR="$NEW_DIR/vps/worker"
-NEW_INSTRUCTOR_DIR="$NEW_DIR/vps/worker-instructor"
 
 # ── carry over secrets (.env is gitignored, so the clone has none) ────────────
 step "Copying .env secrets from the old install"
@@ -108,7 +106,6 @@ copy_env() {
 }
 if [[ -n "$OLD_REPO_DIR" ]]; then
   copy_env "$OLD_REPO_DIR/vps/worker/.env"            "$NEW_WORKER_DIR/.env"     "student"
-  copy_env "$OLD_REPO_DIR/vps/worker-instructor/.env" "$NEW_INSTRUCTOR_DIR/.env" "instructor"
 fi
 
 # ── build the workers in the new clone ────────────────────────────────────────
@@ -124,15 +121,6 @@ build_worker() {
 
 build_worker "$NEW_WORKER_DIR" "student"
 
-# Only build/enable the instructor worker if it has an .env (matches auto-update).
-DO_INSTRUCTOR=0
-if [[ -f "$NEW_INSTRUCTOR_DIR/.env" ]]; then
-  DO_INSTRUCTOR=1
-  build_worker "$NEW_INSTRUCTOR_DIR" "instructor"
-else
-  warn "instructor worker skipped (no .env at $NEW_INSTRUCTOR_DIR/.env)"
-fi
-
 # ── re-point systemd units at the new clone (templates come from the new repo) ─
 install_unit() {
   local template="$1" unit_name="$2" worker_dir="$3"
@@ -143,10 +131,6 @@ install_unit() {
 
 step "Installing systemd units pointing at $NEW_DIR"
 install_unit "$NEW_DIR/vps/turnitin-worker.service" "turnitin-worker" "$NEW_WORKER_DIR"
-if [[ "$DO_INSTRUCTOR" -eq 1 ]]; then
-  install_unit "$NEW_DIR/vps/turnitin-instructor-worker.service" \
-               "turnitin-instructor-worker" "$NEW_INSTRUCTOR_DIR"
-fi
 
 # Re-point the auto-update timer/service at the new repo too (if it was set up).
 if [[ -f /etc/systemd/system/turnitin-worker-update.timer ]] \
@@ -163,10 +147,6 @@ step "Reloading systemd and starting services"
 systemctl daemon-reload
 systemctl enable turnitin-worker --quiet 2>/dev/null || true
 systemctl start  turnitin-worker
-if [[ "$DO_INSTRUCTOR" -eq 1 ]]; then
-  systemctl enable turnitin-instructor-worker --quiet 2>/dev/null || true
-  systemctl start  turnitin-instructor-worker
-fi
 if [[ -f /etc/systemd/system/turnitin-worker-update.timer ]]; then
   systemctl enable --now turnitin-worker-update.timer 2>/dev/null || true
 fi
@@ -179,7 +159,6 @@ echo "Future auto-updates pull from: $NEW_REPO_URL ($BRANCH)"
 echo ""
 echo "Verify:"
 echo "  systemctl status turnitin-worker --no-pager"
-[[ "$DO_INSTRUCTOR" -eq 1 ]] && echo "  systemctl status turnitin-instructor-worker --no-pager"
 echo "  journalctl -u turnitin-worker -f --no-pager"
 echo ""
 if [[ -n "$OLD_REPO_DIR" ]]; then

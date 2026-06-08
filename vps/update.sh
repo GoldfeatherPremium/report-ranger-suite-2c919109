@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
-# update.sh — pull latest code and redeploy both workers.
+# update.sh — pull latest code and redeploy the worker.
 #
 # Usage:
 #   sudo bash update.sh                          # normal update
 #   sudo bash update.sh --force                  # rebuild even if already up to date
 #   sudo bash update.sh --background             # detach; tail /var/log/worker-update.log
-#   sudo bash update.sh --student-only           # only rebuild/restart student worker
-#   sudo bash update.sh --instructor-only        # only rebuild/restart instructor worker
 #
 # Env vars:
 #   WORKER_BRANCH=main   git branch to deploy (default: main)
@@ -21,20 +19,15 @@ fi
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 WORKER_DIR="$REPO_DIR/vps/worker"
-INSTRUCTOR_DIR="$REPO_DIR/vps/worker-instructor"
 BRANCH="${WORKER_BRANCH:-main}"
 LOG="/var/log/worker-update.log"
 
 FORCE=0
-STUDENT_ONLY=0
-INSTRUCTOR_ONLY=0
 BG=0
 
 for arg in "$@"; do
   case "$arg" in
     --force)          FORCE=1 ;;
-    --student-only)   STUDENT_ONLY=1 ;;
-    --instructor-only) INSTRUCTOR_ONLY=1 ;;
     --background)     BG=1 ;;
   esac
 done
@@ -43,14 +36,12 @@ done
 if [[ "$BG" -eq 1 ]]; then
   EXTRA=""
   [[ "$FORCE" -eq 1 ]] && EXTRA+=" --force"
-  [[ "$STUDENT_ONLY" -eq 1 ]] && EXTRA+=" --student-only"
-  [[ "$INSTRUCTOR_ONLY" -eq 1 ]] && EXTRA+=" --instructor-only"
   # shellcheck disable=SC2086
   nohup bash "$0" $EXTRA > "$LOG" 2>&1 &
   BG_PID=$!
   echo "Running in background (PID $BG_PID)"
   echo "Watch: tail -f $LOG"
-  echo "Status: systemctl status turnitin-worker turnitin-instructor-worker --no-pager"
+  echo "Status: systemctl status turnitin-worker --no-pager"
   exit 0
 fi
 
@@ -81,7 +72,6 @@ if [[ "$LOCAL" == "$REMOTE" && "$FORCE" -eq 0 ]]; then
   }
   log "Current service statuses:"
   show_status turnitin-worker
-  show_status turnitin-instructor-worker
   exit 0
 fi
 
@@ -140,41 +130,20 @@ restart_and_check() {
 }
 
 # ── 2. student worker ─────────────────────────────────────────────────────────
-if [[ "$INSTRUCTOR_ONLY" -eq 0 ]]; then
-  separator
-  log "Rebuilding student worker"
-  build_worker "$WORKER_DIR" "student"
-  install_unit "$REPO_DIR/vps/turnitin-worker.service" \
-               "turnitin-worker" \
-               "$WORKER_DIR"
-  restart_and_check "turnitin-worker"
-fi
+separator
+log "Rebuilding student worker"
+build_worker "$WORKER_DIR" "student"
+install_unit "$REPO_DIR/vps/turnitin-worker.service" \
+             "turnitin-worker" \
+             "$WORKER_DIR"
+restart_and_check "turnitin-worker"
 
-# ── 3. instructor worker ──────────────────────────────────────────────────────
-if [[ "$STUDENT_ONLY" -eq 0 ]]; then
-  separator
-  if [[ -f "$INSTRUCTOR_DIR/.env" ]]; then
-    log "Rebuilding instructor worker"
-    build_worker "$INSTRUCTOR_DIR" "instructor"
-    install_unit "$REPO_DIR/vps/turnitin-instructor-worker.service" \
-                 "turnitin-instructor-worker" \
-                 "$INSTRUCTOR_DIR"
-    restart_and_check "turnitin-instructor-worker"
-  else
-    log "[instructor] skipped — $INSTRUCTOR_DIR/.env not found"
-    log "[instructor] To enable:"
-    log "             cp $INSTRUCTOR_DIR/.env.example $INSTRUCTOR_DIR/.env"
-    log "             nano $INSTRUCTOR_DIR/.env"
-    log "             sudo bash $0 --instructor-only"
-  fi
-fi
-
-# ── 4. final summary ──────────────────────────────────────────────────────────
+# ── 3. final summary ──────────────────────────────────────────────────────────
 separator
 log "Deployed: $(git rev-parse --short HEAD)"
 echo ""
 log "Service statuses:"
-for svc in turnitin-worker turnitin-instructor-worker; do
+for svc in turnitin-worker; do
   if systemctl is-enabled "$svc" --quiet 2>/dev/null; then
     state="$(systemctl is-active "$svc" 2>/dev/null || true)"
     active_jobs="$(journalctl -u "$svc" -n 5 --no-pager -o cat 2>/dev/null | grep -oP 'activeJobs=\K\d+' | tail -1 || true)"
@@ -184,4 +153,3 @@ done
 echo ""
 log "Live logs:"
 log "  Student:    journalctl -u turnitin-worker -f --no-pager"
-log "  Instructor: journalctl -u turnitin-instructor-worker -f --no-pager"
