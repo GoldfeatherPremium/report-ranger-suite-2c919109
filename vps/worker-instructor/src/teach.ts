@@ -9,7 +9,7 @@ import {
   recordStep, saveFlow, log, type FlowAction,
 } from "./supabase.js";
 import {
-  launch, login, screenshot, extractElements, metaOf, disposeAll, clickInRow,
+  launch, login, screenshot, extractElements, metaOf, disposeAll, clickInRow, clickNthMatching,
   isLoginFormPresent, saveSession, homeUrlFor, type DetectedElement,
 } from "./browser.js";
 import type { Page } from "playwright";
@@ -37,6 +37,9 @@ Commands (act on the numbered elements shown above):
   viewassign <name...>   click "View" in the assignment row named <name>, recorded
                          as the configured assignment (dynamic)
   rowclick <action> | <row...>   click <action> in the row labelled <row>
+  menulane <i>           click the 3-dots "Display actions menu" in lane #i (0-based),
+                         recorded as the worker's assigned lane (dynamic)
+  clicknth <i> <needle...>   click the i-th element whose label contains <needle>
   fill <i> <value...>    type a value into element #i
   upload <i> [path]      attach a file to file-input #i (default: TEACH_SAMPLE_FILE)
   press <Key>            press a keyboard key (e.g. press Enter)
@@ -236,6 +239,23 @@ async function execute(
         const r = await clickInRow(page, rowText, actionText);
         if (r.status !== "ok") return { action: null, error: `could not click "${actionText}" in row "${rowText}" (${r.status})` };
         return { action: { type: "clickrow", value: rowText, actionText, frame: r.frame, text: rowText } };
+      }
+      case "menulane": {
+        const i = Number(rest[0]);
+        if (!Number.isInteger(i) || i < 0) return { action: null, error: "usage: menulane <i>  (0 = first lane)" };
+        const needle = "Display actions menu";
+        const r = await clickNthMatching(page, needle, i);
+        if (r.status !== "ok") return { action: null, error: `could not click lane #${i} 3-dots (${r.status})` };
+        // Record dynamically: replay clicks the lane assigned to this worker.
+        return { action: { type: "clicknth", value: "<<LANE_INDEX>>", actionText: needle, frame: r.frame, text: `lane ${i} actions menu` } };
+      }
+      case "clicknth": {
+        const i = Number(rest[0]);
+        const needle = rest.slice(1).join(" ");
+        if (!Number.isInteger(i) || i < 0 || !needle) return { action: null, error: "usage: clicknth <i> <needle...>" };
+        const r = await clickNthMatching(page, needle, i);
+        if (r.status !== "ok") return { action: null, error: `could not click match #${i} for "${needle}" (${r.status})` };
+        return { action: { type: "clicknth", value: String(i), actionText: needle, frame: r.frame, text: needle } };
       }
       case "fill": {
         const el = pick(rest[0]);
