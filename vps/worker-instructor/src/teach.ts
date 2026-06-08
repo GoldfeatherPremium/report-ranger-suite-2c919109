@@ -1,0 +1,205 @@
+import "./load-env.js";
+import * as readline from "node:readline/promises";
+import { stdin as input, stdout as output } from "node:process";
+import {
+  getInstructorAccount, createSession, finishSession, uploadScreenshot,
+  recordStep, saveFlow, log, type FlowAction,
+} from "./supabase.js";
+import { launch, login, screenshot, extractElements, metaOf, disposeAll, type DetectedElement } from "./browser.js";
+import type { Page } from "playwright";
+
+const WORKER_ID = process.env.WORKER_ID ?? `instructor-teach-${process.pid}`;
+const HEADLESS = (process.env.HEADLESS ?? "true") === "true";
+const SAMPLE_FILE = process.env.TEACH_SAMPLE_FILE ?? "./sample.docx";
+const ACCOUNT_LABEL = process.env.TEACH_ACCOUNT_LABEL;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+const HELP = `
+Commands (act on the numbered elements shown above):
+  click <i>              click element #i
+  fill <i> <value...>    type a value into element #i
+  upload <i> [path]      attach a file to file-input #i (default: TEACH_SAMPLE_FILE)
+  press <Key>            press a keyboard key (e.g. press Enter)
+  goto <url>             navigate to a URL
+  waittext <text...>     wait until some text appears on the page
+  wait <ms>              pause N milliseconds, then re-capture
+  scroll <px>            scroll vertically by px (e.g. scroll 600)
+  shot                   re-capture the current screen (no action recorded)
+  done [name...]         save the recorded sequence as a flow and exit
+  abort                  discard and exit
+  help                   show this help
+`.trim();
+
+async function main() {
+  const account = await getInstructorAccount(ACCOUNT_LABEL);
+  console.log(`\n=== Turnitin Instructor — TEACH mode ===`);
+  console.log(`account : ${account.label} <${account.email}>`);
+  console.log(`headless: ${HEADLESS}\n`);
+
+  const { browser, page } = await launch(HEADLESS);
+  const sessionId = await createSession(account.id, WORKER_ID, `teach ${account.label}`);
+  await log(WORKER_ID, "info", `teaching session ${sessionId} for ${account.label}`);
+
+  try {
+    await login(page, account, (m) => console.log(`  · ${m}`));
+  } catch (e) {
+    console.error(`login failed: ${e instanceof Error ? e.message : String(e)}`);
+    console.error(`Continuing anyway — you can 'goto' the right URL or inspect the captured screen.`);
+  }
+
+  const rl = readline.createInterface({ input, output });
+  const recorded: FlowAction[] = [];
+  let idx = 0;
+
+  try {
+    // Outer loop: capture → show → act → repeat
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      await page.waitForLoadState("networkidle", { timeout: 8_000 }).catch(() => {});
+      const png = await screenshot(page);
+      const { path, signedUrl } = await uploadScreenshot(sessionId, idx, png);
+      const els = await extractElements(page);
+      const title = await page.title().catch(() => "");
+
+      printScreen(idx, page, title, signedUrl, els);
+
+      const line = (await rl.question("\naction> ")).trim();
+      const [cmd, ...rest] = line.split(/\s+/);
+
+      if (cmd === "help" || cmd === "?") { console.log(HELP); await disposeAll(els); continue; }
+      if (cmd === "shot" || cmd === "") { await disposeAll(els); continue; }
+
+      if (cmd === "abort") {
+        await recordStep({ sessionId, idx, pageUrl: page.url(), pageTitle: title, screenshotPath: path, elements: metaOf(els), action: null, status: "captured" });
+        await disposeAll(els);
+        await finishSession(sessionId, "aborted");
+        console.log("aborted — nothing saved as a flow.");
+        break;
+      }
+
+      if (cmd === "done") {
+        await recordStep({ sessionId, idx, pageUrl: page.url(), pageTitle: title, screenshotPath: path, elements: metaOf(els), action: null, status: "captured" });
+        await disposeAll(els);
+        const name = rest.join(" ") || `${account.label} flow`;
+        const flowId = await saveFlow(account.id, name, recorded);
+        await finishSession(sessionId, "finished");
+        console.log(`\n✅ saved flow "${name}" (${recorded.length} actions) → id ${flowId}`);
+        console.log(`   activate it later with: update turnitin_instructor_flows set status='active' where id='${flowId}';`);
+        break;
+      }
+
+      const { action, error } = await execute(page, els, cmd, rest);
+      if (error) {
+        console.log(`  ⚠️  ${error}`);
+        await disposeAll(els);
+        continue; // re-capture same idx; nothing recorded
+      }
+
+      await recordStep({
+        sessionId, idx, pageUrl: page.url(), pageTitle: title, screenshotPath: path,
+        elements: metaOf(els), action, status: "executed",
+        result: describe(action),
+      });
+      if (action) recorded.push(action);
+      await disposeAll(els);
+      idx++;
+      await sleep(1200);
+    }
+  } finally {
+    rl.close();
+    await browser.close().catch(() => {});
+  }
+}
+
+function printScreen(idx: number, page: Page, title: string, signedUrl: string | null, els: DetectedElement[]) {
+  console.log(`\n──────────────────────────────────────────────`);
+  console.log(`STEP ${idx}`);
+  console.log(`url   : ${page.url()}`);
+  console.log(`title : ${title}`);
+  console.log(`shot  : ${signedUrl ?? "(upload failed)"}`);
+  console.log(`elements (${els.length}):`);
+  for (const e of els) {
+    const label = e.text ? `"${e.text}"` : "(no text)";
+    const sel = e.selector ? `  ${e.selector}` : "";
+    const fr = e.frame > 0 ? ` frame#${e.frame}` : "";
+    console.log(`  [${e.i}] <${e.tag}${e.type ? ` type=${e.type}` : ""}> ${label}${sel}${fr}`);
+  }
+  console.log(`(type 'help' for commands)`);
+}
+
+async function execute(
+  page: Page, els: DetectedElement[], cmd: string, rest: string[],
+): Promise<{ action: FlowAction | null; error?: string }> {
+  const pick = (n: string): DetectedElement | null => {
+    const i = Number(n);
+    return Number.isInteger(i) && i >= 0 && i < els.length ? els[i] : null;
+  };
+
+  try {
+    switch (cmd) {
+      case "click": {
+        const el = pick(rest[0]);
+        if (!el) return { action: null, error: `no element #${rest[0]}` };
+        await el.handle.click({ timeout: 15_000 });
+        return { action: { type: "click", selector: el.selector, frame: el.frame, text: el.text } };
+      }
+      case "fill": {
+        const el = pick(rest[0]);
+        if (!el) return { action: null, error: `no element #${rest[0]}` };
+        const value = rest.slice(1).join(" ");
+        await el.handle.fill(value, { timeout: 15_000 });
+        return { action: { type: "fill", selector: el.selector, frame: el.frame, text: el.text, value } };
+      }
+      case "upload": {
+        const el = pick(rest[0]);
+        if (!el) return { action: null, error: `no element #${rest[0]}` };
+        const file = rest[1] || SAMPLE_FILE;
+        await el.handle.setInputFiles(file);
+        // Replay substitutes the real job document for this placeholder.
+        return { action: { type: "upload", selector: el.selector, frame: el.frame, text: el.text, value: "<<JOB_FILE>>" } };
+      }
+      case "press": {
+        const key = rest[0];
+        if (!key) return { action: null, error: "press needs a key, e.g. press Enter" };
+        await page.keyboard.press(key);
+        return { action: { type: "press", key } };
+      }
+      case "goto": {
+        const url = rest[0];
+        if (!url) return { action: null, error: "goto needs a url" };
+        await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60_000 });
+        return { action: { type: "goto", value: url } };
+      }
+      case "waittext": {
+        const text = rest.join(" ");
+        if (!text) return { action: null, error: "waittext needs some text" };
+        await page.getByText(text, { exact: false }).first().waitFor({ timeout: 60_000 });
+        return { action: { type: "waittext", value: text } };
+      }
+      case "wait": {
+        const ms = Number(rest[0] || "1000");
+        await sleep(ms);
+        return { action: { type: "wait", value: String(ms) } };
+      }
+      case "scroll": {
+        const px = Number(rest[0] || "600");
+        await page.mouse.wheel(0, px);
+        return { action: { type: "scroll", value: String(px) } };
+      }
+      default:
+        return { action: null, error: `unknown command "${cmd}" — type 'help'` };
+    }
+  } catch (e) {
+    return { action: null, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+function describe(a: FlowAction | null): string {
+  if (!a) return "";
+  if (a.type === "click") return `click ${a.text || a.selector || ""}`.trim();
+  if (a.type === "fill") return `fill ${a.text || a.selector || ""} = ${a.value}`.trim();
+  return `${a.type} ${a.value ?? a.key ?? ""}`.trim();
+}
+
+main().catch((e) => { console.error("fatal:", e); process.exit(1); });
