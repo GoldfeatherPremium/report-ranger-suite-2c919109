@@ -517,6 +517,47 @@ export type Database = {
           },
         ]
       }
+      turnitin_instructor_flows: {
+        Row: {
+          account_id: string | null
+          created_at: string
+          id: string
+          name: string
+          notes: string | null
+          status: string
+          steps: Json
+          updated_at: string
+        }
+        Insert: {
+          account_id?: string | null
+          created_at?: string
+          id?: string
+          name: string
+          notes?: string | null
+          status?: string
+          steps?: Json
+          updated_at?: string
+        }
+        Update: {
+          account_id?: string | null
+          created_at?: string
+          id?: string
+          name?: string
+          notes?: string | null
+          status?: string
+          steps?: Json
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "turnitin_instructor_flows_account_id_fkey"
+            columns: ["account_id"]
+            isOneToOne: false
+            referencedRelation: "turnitin_instructor_accounts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       turnitin_instructor_slot_usage: {
         Row: {
           assignment_id: string
@@ -631,6 +672,94 @@ export type Database = {
             columns: ["account_id"]
             isOneToOne: false
             referencedRelation: "turnitin_accounts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      turnitin_training_sessions: {
+        Row: {
+          account_id: string | null
+          created_at: string
+          id: string
+          note: string | null
+          status: string
+          updated_at: string
+          worker_id: string
+        }
+        Insert: {
+          account_id?: string | null
+          created_at?: string
+          id?: string
+          note?: string | null
+          status?: string
+          updated_at?: string
+          worker_id: string
+        }
+        Update: {
+          account_id?: string | null
+          created_at?: string
+          id?: string
+          note?: string | null
+          status?: string
+          updated_at?: string
+          worker_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "turnitin_training_sessions_account_id_fkey"
+            columns: ["account_id"]
+            isOneToOne: false
+            referencedRelation: "turnitin_instructor_accounts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      turnitin_training_steps: {
+        Row: {
+          action: Json | null
+          created_at: string
+          elements: Json
+          id: string
+          idx: number
+          page_title: string | null
+          page_url: string | null
+          result: string | null
+          screenshot_path: string | null
+          session_id: string
+          status: string
+        }
+        Insert: {
+          action?: Json | null
+          created_at?: string
+          elements?: Json
+          id?: string
+          idx: number
+          page_title?: string | null
+          page_url?: string | null
+          result?: string | null
+          screenshot_path?: string | null
+          session_id: string
+          status?: string
+        }
+        Update: {
+          action?: Json | null
+          created_at?: string
+          elements?: Json
+          id?: string
+          idx?: number
+          page_title?: string | null
+          page_url?: string | null
+          result?: string | null
+          screenshot_path?: string | null
+          session_id?: string
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "turnitin_training_steps_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "turnitin_training_sessions"
             referencedColumns: ["id"]
           },
         ]
