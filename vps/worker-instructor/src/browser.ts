@@ -186,6 +186,59 @@ export function metaOf(els: DetectedElement[]): ElementMeta[] {
   return els.map(({ handle: _h, ...m }) => m);
 }
 
+// Click an in-row action link (e.g. "View") that sits on the same visual row as
+// a label (e.g. an assignment name). Turnitin lists every assignment with an
+// identical "View" link, so we match by geometry: pick the action element whose
+// top edge is the first at/below the label's top. Robust across iframes.
+export async function clickInRow(
+  page: Page, rowText: string, actionText: string,
+): Promise<{ status: string; frame: number }> {
+  const frames = page.frames();
+  for (let fi = 0; fi < frames.length; fi++) {
+    const frame = frames[fi];
+    let result: string;
+    try {
+      result = await frame.evaluate(({ rowText, actionText }) => {
+        const norm = (s: string | null) => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
+        const want = norm(rowText);
+        const act = norm(actionText);
+        const all = Array.from(document.querySelectorAll("body *"));
+
+        const exact = all.filter((e) => norm(e.textContent) === want);
+        const partial = all.filter((e) => norm(e.textContent).includes(want));
+        const pool = (exact.length ? exact : partial).sort(
+          (a, b) => (a.textContent || "").length - (b.textContent || "").length,
+        );
+        const label = pool[0];
+        if (!label) return "no-label";
+        const labelTop = label.getBoundingClientRect().top;
+
+        const actions = all.filter(
+          (e) => (e.tagName === "A" || e.tagName === "BUTTON" || e.getAttribute("role") === "button")
+            && norm(e.textContent) === act,
+        );
+        if (!actions.length) return "no-action";
+
+        const withTop = actions.map((e) => ({ e, top: e.getBoundingClientRect().top }));
+        const below = withTop.filter((x) => x.top >= labelTop - 12).sort((a, b) => a.top - b.top);
+        const chosen = (below[0]
+          ?? withTop.sort((a, b) => Math.abs(a.top - labelTop) - Math.abs(b.top - labelTop))[0]).e;
+
+        document.querySelectorAll("[data-teach-target]").forEach((x) => x.removeAttribute("data-teach-target"));
+        chosen.setAttribute("data-teach-target", "1");
+        return "ok";
+      }, { rowText, actionText });
+    } catch { continue; }
+
+    if (result === "ok") {
+      try { await frame.click('[data-teach-target="1"]', { timeout: 15_000 }); }
+      finally { await frame.evaluate(() => document.querySelectorAll("[data-teach-target]").forEach((x) => x.removeAttribute("data-teach-target"))).catch(() => {}); }
+      return { status: "ok", frame: fi };
+    }
+  }
+  return { status: "not-found", frame: -1 };
+}
+
 export async function disposeAll(els: DetectedElement[]): Promise<void> {
   await Promise.all(els.map((e) => e.handle.dispose().catch(() => {})));
 }

@@ -9,7 +9,7 @@ import {
   recordStep, saveFlow, log, type FlowAction,
 } from "./supabase.js";
 import {
-  launch, login, screenshot, extractElements, metaOf, disposeAll,
+  launch, login, screenshot, extractElements, metaOf, disposeAll, clickInRow,
   isLoginFormPresent, saveSession, homeUrlFor, type DetectedElement,
 } from "./browser.js";
 import type { Page } from "playwright";
@@ -34,6 +34,9 @@ Commands (act on the numbered elements shown above):
   clickclass <i>         click class link #i, recorded as the configured class name
   clickassign <i>        click assignment link #i, recorded as the configured assignment name
   clicktext <text...>    click the element whose visible text matches
+  viewassign <name...>   click "View" in the assignment row named <name>, recorded
+                         as the configured assignment (dynamic)
+  rowclick <action> | <row...>   click <action> in the row labelled <row>
   fill <i> <value...>    type a value into element #i
   upload <i> [path]      attach a file to file-input #i (default: TEACH_SAMPLE_FILE)
   press <Key>            press a keyboard key (e.g. press Enter)
@@ -216,6 +219,23 @@ async function execute(
         if (!el) return { action: null, error: `no visible element with text "${text}"` };
         await el.handle.click({ timeout: 15_000 });
         return { action: { type: "clicktext", value: text, selector: el.selector, frame: el.frame, text: el.text } };
+      }
+      case "viewassign": {
+        const name = rest.join(" ");
+        if (!name) return { action: null, error: "viewassign needs the assignment name, e.g. viewassign Research" };
+        const r = await clickInRow(page, name, "View");
+        if (r.status !== "ok") return { action: null, error: `could not click View for "${name}" (${r.status})` };
+        // Click concretely now; record dynamically so replay uses the configured assignment.
+        return { action: { type: "clickrow", value: "<<ASSIGNMENT_LABEL>>", actionText: "View", frame: r.frame, text: name } };
+      }
+      case "rowclick": {
+        // rowclick <action> | <row text...>
+        const raw = rest.join(" ");
+        const [actionText, rowText] = raw.split("|").map((s) => s.trim());
+        if (!actionText || !rowText) return { action: null, error: 'usage: rowclick <action> | <row text>  (e.g. rowclick View | Research)' };
+        const r = await clickInRow(page, rowText, actionText);
+        if (r.status !== "ok") return { action: null, error: `could not click "${actionText}" in row "${rowText}" (${r.status})` };
+        return { action: { type: "clickrow", value: rowText, actionText, frame: r.frame, text: rowText } };
       }
       case "fill": {
         const el = pick(rest[0]);
