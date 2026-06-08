@@ -26,6 +26,8 @@ Commands (act on the numbered elements shown above):
   wait <ms>              pause N milliseconds, then re-capture
   scroll <px>            scroll vertically by px (e.g. scroll 600)
   shot                   re-capture the current screen (no action recorded)
+  reload                 reload the current page, then re-capture (recovery)
+  relogin                re-run the whole login flow, then re-capture (recovery)
   done [name...]         save the recorded sequence as a flow and exit
   abort                  discard and exit
   help                   show this help
@@ -69,6 +71,21 @@ async function main() {
 
       if (cmd === "help" || cmd === "?") { console.log(HELP); await disposeAll(els); continue; }
       if (cmd === "shot" || cmd === "") { await disposeAll(els); continue; }
+
+      // Recovery commands — not recorded into the flow, just re-capture.
+      if (cmd === "reload") {
+        console.log("  · reloading…");
+        await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 }).catch((e) => console.log(`  ⚠️  reload: ${e instanceof Error ? e.message : e}`));
+        await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {});
+        await disposeAll(els);
+        continue;
+      }
+      if (cmd === "relogin") {
+        try { await login(page, account, (m) => console.log(`  · ${m}`)); }
+        catch (e) { console.log(`  ⚠️  relogin failed: ${e instanceof Error ? e.message : String(e)}`); }
+        await disposeAll(els);
+        continue;
+      }
 
       if (cmd === "abort") {
         await recordStep({ sessionId, idx, pageUrl: page.url(), pageTitle: title, screenshotPath: path, elements: metaOf(els), action: null, status: "captured" });

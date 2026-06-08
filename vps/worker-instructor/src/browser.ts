@@ -27,28 +27,69 @@ export async function launch(headless: boolean): Promise<{ browser: Browser; con
   return { browser, context, page };
 }
 
-// Best-effort login. Tries the main frame then any child frame for each field.
-export async function login(page: Page, account: InstructorAccount, log: (m: string) => Promise<void> | void): Promise<void> {
-  await log(`opening login: ${account.login_url}`);
-  await page.goto(account.login_url, { waitUntil: "domcontentloaded", timeout: 60_000 });
+// Best-effort login with retries. Turnitin often serves a transient error /
+// interstitial page on the first hit, so we re-navigate a few times before
+// giving up. Tries the main frame then any child frame for each field.
+export async function login(
+  page: Page,
+  account: InstructorAccount,
+  log: (m: string) => Promise<void> | void,
+  attempts = 3,
+): Promise<void> {
+  let lastErr: unknown;
+  for (let a = 1; a <= attempts; a++) {
+    try {
+      await log(`opening login (attempt ${a}/${attempts}): ${account.login_url}`);
+      await page.goto(account.login_url, { waitUntil: "domcontentloaded", timeout: 60_000 });
+      await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => {});
 
-  const email = await locateInAnyFrame(page, LOGIN.email);
-  if (!email) throw new Error("Could not find the email/username field on the login page (selectors may need updating).");
-  await email.fill(account.email);
+      const email = await locateInAnyFrame(page, LOGIN.email);
+      if (!email) {
+        const why = (await pageLooksLikeError(page)) ? " (looks like an error/interstitial page)" : "";
+        if (a < attempts) {
+          await log(`no login form yet${why} — retrying in ${3 * a}s`);
+          await page.waitForTimeout(3000 * a);
+          continue;
+        }
+        throw new Error(`Could not find the email/username field on the login page${why}.`);
+      }
+      await email.fill(account.email);
 
-  const pwd = await locateInAnyFrame(page, LOGIN.password);
-  if (!pwd) throw new Error("Found the email field but not the password field on the login page.");
-  await pwd.fill(account.password);
+      const pwd = await locateInAnyFrame(page, LOGIN.password);
+      if (!pwd) throw new Error("Found the email field but not the password field on the login page.");
+      await pwd.fill(account.password);
 
-  const submit = await locateInAnyFrame(page, LOGIN.submit);
-  if (submit) await Promise.all([
-    page.waitForLoadState("domcontentloaded", { timeout: 60_000 }).catch(() => {}),
-    submit.click().catch(() => {}),
-  ]);
-  else await pwd.press("Enter").catch(() => {});
+      const submit = await locateInAnyFrame(page, LOGIN.submit);
+      if (submit) await Promise.all([
+        page.waitForLoadState("domcontentloaded", { timeout: 60_000 }).catch(() => {}),
+        submit.click().catch(() => {}),
+      ]);
+      else await pwd.press("Enter").catch(() => {});
 
-  await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
-  await log(`after login: url=${page.url()} title=${await page.title().catch(() => "?")}`);
+      await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
+      await log(`after login: url=${page.url()} title=${await page.title().catch(() => "?")}`);
+      return;
+    } catch (e) {
+      lastErr = e;
+      await log(`login attempt ${a} failed: ${e instanceof Error ? e.message : String(e)}`);
+      if (a < attempts) await page.waitForTimeout(3000 * a);
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
+// Heuristic: does the current page look like a Turnitin/Cloudflare error or
+// interstitial rather than the real login form?
+async function pageLooksLikeError(page: Page): Promise<boolean> {
+  try {
+    const blob = (
+      (await page.title().catch(() => "")) + " " +
+      (await page.locator("body").innerText({ timeout: 2000 }).catch(() => ""))
+    ).toLowerCase();
+    return /\b(error|denied|forbidden|unavailable|attention required|cloudflare|just a moment|429|403|404|503|too many requests|try again)\b/.test(blob);
+  } catch {
+    return false;
+  }
 }
 
 async function locateInAnyFrame(page: Page, selector: string): Promise<ElementHandle | null> {
