@@ -218,6 +218,45 @@ export function metaOf(els: DetectedElement[]): ElementMeta[] {
   return els.map(({ handle: _h, ...m }) => m);
 }
 
+// Click a real <button> by its accessible name with a hard mouse click. Targets
+// the button via role (so it never matches a same-text heading like the "Submit
+// file" dialog title), WAITS until the button is enabled (e.g. while Turnitin
+// builds the file preview), then issues a genuine mouse.move + mouse.click at the
+// button's centre. This is the reliable way to hit Turnitin's blue Submit button.
+export async function clickButtonByName(
+  page: Page, name: string, waitEnabledMs = 60_000,
+): Promise<{ status: string; frame: number }> {
+  const deadline = Date.now() + waitEnabledMs;
+  let sawButton = false;
+  while (Date.now() < deadline) {
+    const frames = page.frames();
+    for (let fi = 0; fi < frames.length; fi++) {
+      const frame = frames[fi];
+      try {
+        let btn = frame.getByRole("button", { name, exact: true }).filter({ visible: true }).first();
+        if ((await btn.count()) === 0) {
+          btn = frame.getByRole("button", { name, exact: false }).filter({ visible: true }).first();
+          if ((await btn.count()) === 0) continue;
+        }
+        sawButton = true;
+        if (!(await btn.isEnabled().catch(() => false))) continue; // still disabled — keep polling
+        const box = await btn.boundingBox();
+        if (box) {
+          const cx = box.x + box.width / 2;
+          const cy = box.y + box.height / 2;
+          await page.mouse.move(cx, cy);
+          await page.mouse.click(cx, cy, { delay: 60 });
+        } else {
+          await btn.click({ force: true, timeout: 8_000 });
+        }
+        return { status: "ok", frame: fi };
+      } catch { /* try next frame */ }
+    }
+    await page.waitForTimeout(1000);
+  }
+  return { status: sawButton ? "stayed-disabled" : "not-found", frame: -1 };
+}
+
 // A "hard" click for elements that Stencil web components guard with pointer-
 // event interception (which makes a normal Playwright click time out). Primary
 // path is a forced click on the element itself — Playwright clicks the element's

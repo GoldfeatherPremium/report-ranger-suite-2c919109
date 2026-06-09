@@ -9,8 +9,8 @@ import {
   recordStep, saveFlow, log, type FlowAction,
 } from "./supabase.js";
 import {
-  launch, login, screenshot, extractElements, metaOf, disposeAll, clickInRow, clickByText, hardClick, setFileInput,
-  isLoggedIn, saveSession, homeUrlFor, type DetectedElement,
+  launch, login, screenshot, extractElements, metaOf, disposeAll, clickInRow, clickByText, hardClick,
+  setFileInput, clickButtonByName, isLoggedIn, saveSession, homeUrlFor, type DetectedElement,
 } from "./browser.js";
 import type { Page } from "playwright";
 
@@ -38,6 +38,7 @@ Commands (act on the numbered elements shown above):
   clicktext <text...>    click the element whose visible text matches
   clickany <a> | <b>...  click the first option present (e.g. Resubmit | Submit)
   clickif <text...>      click if present, else skip (optional step, e.g. Confirm)
+  clickbtn <name...>     hard mouse-click a real button by name, waiting until enabled (e.g. Submit)
   attach [path]          attach a document to the file input (default sample; recorded as the job file)
   viewassign <name...>   click "View" in the assignment row named <name>, recorded
                          as the configured assignment (dynamic)
@@ -265,6 +266,14 @@ async function execute(
         else { clicked = (await clickByText(page, text)).status === "ok"; }
         console.log(`  · clickif "${text}": ${clicked ? "clicked" : "not present — skipped"}`);
         return { action: { type: "clickif", value: text, text } };
+      }
+      case "clickbtn": {
+        // Hard mouse click on a real <button> by name, waiting until it's enabled.
+        const name = rest.join(" ");
+        if (!name) return { action: null, error: "usage: clickbtn <button name>  (e.g. clickbtn Submit)" };
+        const r = await clickButtonByName(page, name);
+        if (r.status !== "ok") return { action: null, error: `button "${name}" ${r.status}` };
+        return { action: { type: "clickbtn", value: name, frame: r.frame, text: name } };
       }
       case "attach": {
         const file = rest[0] || SAMPLE_FILE;
