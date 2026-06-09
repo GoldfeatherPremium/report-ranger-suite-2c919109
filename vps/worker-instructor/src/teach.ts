@@ -9,7 +9,7 @@ import {
   recordStep, saveFlow, log, type FlowAction,
 } from "./supabase.js";
 import {
-  launch, login, screenshot, extractElements, metaOf, disposeAll, clickInRow, clickByText,
+  launch, login, screenshot, extractElements, metaOf, disposeAll, clickInRow, clickByText, hardClick,
   isLoggedIn, saveSession, homeUrlFor, type DetectedElement,
 } from "./browser.js";
 import type { Page } from "playwright";
@@ -242,7 +242,7 @@ async function execute(
         const el = els.find((e) => e.text.toLowerCase() === needle)
           ?? els.find((e) => e.text.toLowerCase().includes(needle));
         if (el) {
-          await el.handle.click({ timeout: 15_000 });
+          await hardClick(page, el.handle);
           return { action: { type: "clicktext", value: text, selector: el.selector, frame: el.frame, text: el.text } };
         }
         // Fall back to Playwright's text engine for non-standard elements (menu <div>s).
@@ -259,7 +259,7 @@ async function execute(
           const el = els.find((e) => e.text.toLowerCase() === needle)
             ?? els.find((e) => e.text.toLowerCase().includes(needle));
           if (el) {
-            await el.handle.click({ timeout: 15_000 });
+            await hardClick(page, el.handle);
             return { action: { type: "clickany", value: alts.join(" | "), frame: el.frame, text: el.text } };
           }
           const r = await clickByText(page, alt);

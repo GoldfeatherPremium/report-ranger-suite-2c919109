@@ -1,4 +1,4 @@
-import { chromium, type Browser, type BrowserContext, type Page, type ElementHandle } from "playwright";
+import { chromium, type Browser, type BrowserContext, type Page, type ElementHandle, type Locator } from "playwright";
 import type { InstructorAccount, ElementMeta } from "./supabase.js";
 
 // A detected element keeps both the persisted metadata and a LIVE Playwright
@@ -200,6 +200,25 @@ export function metaOf(els: DetectedElement[]): ElementMeta[] {
   return els.map(({ handle: _h, ...m }) => m);
 }
 
+// A "hard" click: move the real mouse to the element's centre and click there.
+// Turnitin's Stencil web components (e.g. <tli-workflow-instructor-actions-menu>)
+// register as intercepting pointer events, which makes Playwright's normal
+// actionability click time out. A raw coordinate click lands on whatever pixel
+// the element occupies, bypassing that check. Falls back to a forced click if
+// the element has no box.
+export async function hardClick(page: Page, target: ElementHandle | Locator): Promise<void> {
+  await target.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
+  const box = await target.boundingBox();
+  if (!box) {
+    await (target as unknown as ElementHandle).click({ force: true, timeout: 8_000 });
+    return;
+  }
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.click(x, y);
+}
+
 // Click any element whose visible text contains `needle`, using Playwright's
 // text engine (case-insensitive substring). Unlike the captured-element list,
 // this finds plain <div>/<span> items too — e.g. Feedback Studio's dropdown
@@ -210,9 +229,8 @@ export async function clickByText(page: Page, needle: string): Promise<{ status:
     try {
       const loc = frames[fi].getByText(needle, { exact: false }).first();
       if ((await loc.count()) === 0) continue;
-      await loc.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
       if (await loc.isVisible().catch(() => false)) {
-        await loc.click({ timeout: 8_000 });
+        await hardClick(page, loc);
         return { status: "ok", frame: fi };
       }
     } catch { /* try next frame */ }
