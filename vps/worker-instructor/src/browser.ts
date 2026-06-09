@@ -186,48 +186,6 @@ export function metaOf(els: DetectedElement[]): ElementMeta[] {
   return els.map(({ handle: _h, ...m }) => m);
 }
 
-// Click the N-th element (0-based, top-to-bottom then left-to-right) whose
-// accessible name (aria-label / text / title) contains `needle`. Used for the
-// per-row "Display actions menu" 3-dots buttons: lane 0 = first row, etc.
-export async function clickNthMatching(
-  page: Page, needle: string, n: number,
-): Promise<{ status: string; frame: number }> {
-  const frames = page.frames();
-  for (let fi = 0; fi < frames.length; fi++) {
-    const frame = frames[fi];
-    let result: string;
-    try {
-      result = await frame.evaluate(({ needle, n }) => {
-        const norm = (s: string | null) => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
-        const nd = norm(needle);
-        const cands = Array.from(document.querySelectorAll("button, a, [role=button], [role=menuitem]")).filter((e) => {
-          const acc = norm(`${e.getAttribute("aria-label") || ""} ${e.textContent || ""} ${e.getAttribute("title") || ""}`);
-          if (!acc.includes(nd)) return false;
-          const r = e.getBoundingClientRect();
-          return r.width > 1 && r.height > 1;
-        });
-        cands.sort((a, b) => {
-          const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
-          return ra.top - rb.top || ra.left - rb.left;
-        });
-        if (!cands.length) return "none";
-        if (n < 0 || n >= cands.length) return `oob:${cands.length}`;
-        document.querySelectorAll("[data-teach-target]").forEach((x) => x.removeAttribute("data-teach-target"));
-        cands[n].setAttribute("data-teach-target", "1");
-        return "ok";
-      }, { needle, n });
-    } catch { continue; }
-
-    if (result === "ok") {
-      try { await frame.click('[data-teach-target="1"]', { timeout: 15_000 }); }
-      finally { await frame.evaluate(() => document.querySelectorAll("[data-teach-target]").forEach((x) => x.removeAttribute("data-teach-target"))).catch(() => {}); }
-      return { status: "ok", frame: fi };
-    }
-    if (result.startsWith("oob")) return { status: result, frame: fi };
-  }
-  return { status: "not-found", frame: -1 };
-}
-
 // Click an in-row action link (e.g. "View") that sits on the same visual row as
 // a label (e.g. an assignment name). Turnitin lists every assignment with an
 // identical "View" link, so we match by geometry: pick the action element whose

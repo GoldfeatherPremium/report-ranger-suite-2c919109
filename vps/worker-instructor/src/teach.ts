@@ -9,7 +9,7 @@ import {
   recordStep, saveFlow, log, type FlowAction,
 } from "./supabase.js";
 import {
-  launch, login, screenshot, extractElements, metaOf, disposeAll, clickInRow, clickNthMatching,
+  launch, login, screenshot, extractElements, metaOf, disposeAll, clickInRow,
   isLoginFormPresent, saveSession, homeUrlFor, type DetectedElement,
 } from "./browser.js";
 import type { Page } from "playwright";
@@ -187,6 +187,19 @@ function printScreen(idx: number, page: Page, title: string, signedUrl: string |
   console.log(`(type 'help' for commands)`);
 }
 
+// Find the N-th element (0-based, top-to-bottom then left-to-right) whose text
+// contains `needle`, using the live Playwright handles — which pierce shadow DOM
+// (Turnitin's Feedback Studio renders the submission list inside web components,
+// invisible to an in-page querySelectorAll).
+async function nthMatching(els: DetectedElement[], needle: string, n: number): Promise<DetectedElement | null> {
+  const nd = needle.toLowerCase();
+  const cands = els.filter((e) => e.text.toLowerCase().includes(nd));
+  if (!cands.length || n < 0) return null;
+  const boxed = await Promise.all(cands.map(async (e) => ({ e, box: await e.handle.boundingBox().catch(() => null) })));
+  boxed.sort((a, b) => (a.box?.y ?? 0) - (b.box?.y ?? 0) || (a.box?.x ?? 0) - (b.box?.x ?? 0));
+  return n < boxed.length ? boxed[n].e : null;
+}
+
 async function execute(
   page: Page, els: DetectedElement[], cmd: string, rest: string[],
 ): Promise<{ action: FlowAction | null; error?: string }> {
@@ -244,18 +257,23 @@ async function execute(
         const i = Number(rest[0]);
         if (!Number.isInteger(i) || i < 0) return { action: null, error: "usage: menulane <i>  (0 = first lane)" };
         const needle = "Display actions menu";
-        const r = await clickNthMatching(page, needle, i);
-        if (r.status !== "ok") return { action: null, error: `could not click lane #${i} 3-dots (${r.status})` };
+        const el = await nthMatching(els, needle, i);
+        if (!el) {
+          const found = els.filter((e) => e.text.toLowerCase().includes(needle.toLowerCase())).length;
+          return { action: null, error: `lane #${i} 3-dots not found (matched ${found} "${needle}" buttons)` };
+        }
+        await el.handle.click({ timeout: 15_000 });
         // Record dynamically: replay clicks the lane assigned to this worker.
-        return { action: { type: "clicknth", value: "<<LANE_INDEX>>", actionText: needle, frame: r.frame, text: `lane ${i} actions menu` } };
+        return { action: { type: "clicknth", value: "<<LANE_INDEX>>", actionText: needle, frame: el.frame, text: `lane ${i} actions menu` } };
       }
       case "clicknth": {
         const i = Number(rest[0]);
         const needle = rest.slice(1).join(" ");
         if (!Number.isInteger(i) || i < 0 || !needle) return { action: null, error: "usage: clicknth <i> <needle...>" };
-        const r = await clickNthMatching(page, needle, i);
-        if (r.status !== "ok") return { action: null, error: `could not click match #${i} for "${needle}" (${r.status})` };
-        return { action: { type: "clicknth", value: String(i), actionText: needle, frame: r.frame, text: needle } };
+        const el = await nthMatching(els, needle, i);
+        if (!el) return { action: null, error: `match #${i} for "${needle}" not found` };
+        await el.handle.click({ timeout: 15_000 });
+        return { action: { type: "clicknth", value: String(i), actionText: needle, frame: el.frame, text: needle } };
       }
       case "fill": {
         const el = pick(rest[0]);
