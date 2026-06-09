@@ -167,6 +167,7 @@ export type Database = {
           finished_at: string | null
           id: string
           instructor_assignment_id: string | null
+          instructor_lane: number | null
           last_polled_at: string | null
           max_attempts: number
           metadata: Json
@@ -198,6 +199,7 @@ export type Database = {
           finished_at?: string | null
           id?: string
           instructor_assignment_id?: string | null
+          instructor_lane?: number | null
           last_polled_at?: string | null
           max_attempts?: number
           metadata?: Json
@@ -229,6 +231,7 @@ export type Database = {
           finished_at?: string | null
           id?: string
           instructor_assignment_id?: string | null
+          instructor_lane?: number | null
           last_polled_at?: string | null
           max_attempts?: number
           metadata?: Json
@@ -445,6 +448,7 @@ export type Database = {
           id: string
           is_active: boolean
           label: string
+          lane_count: number
           submit_url: string | null
           updated_at: string
         }
@@ -454,6 +458,7 @@ export type Database = {
           id?: string
           is_active?: boolean
           label: string
+          lane_count?: number
           submit_url?: string | null
           updated_at?: string
         }
@@ -463,6 +468,7 @@ export type Database = {
           id?: string
           is_active?: boolean
           label?: string
+          lane_count?: number
           submit_url?: string | null
           updated_at?: string
         }
@@ -561,6 +567,7 @@ export type Database = {
           freed_at: string | null
           id: string
           job_id: string
+          lane: number | null
           submitted_at: string
           turnitin_submission_id: string | null
         }
@@ -569,6 +576,7 @@ export type Database = {
           freed_at?: string | null
           id?: string
           job_id: string
+          lane?: number | null
           submitted_at?: string
           turnitin_submission_id?: string | null
         }
@@ -577,6 +585,7 @@ export type Database = {
           freed_at?: string | null
           id?: string
           job_id?: string
+          lane?: number | null
           submitted_at?: string
           turnitin_submission_id?: string | null
         }
@@ -888,6 +897,7 @@ export type Database = {
           finished_at: string | null
           id: string
           instructor_assignment_id: string | null
+          instructor_lane: number | null
           last_polled_at: string | null
           max_attempts: number
           metadata: Json
@@ -928,6 +938,7 @@ export type Database = {
           finished_at: string | null
           id: string
           instructor_assignment_id: string | null
+          instructor_lane: number | null
           last_polled_at: string | null
           max_attempts: number
           metadata: Json
@@ -968,6 +979,7 @@ export type Database = {
         Args: { p_event: string; p_job_id: string }
         Returns: undefined
       }
+      instructor_job_owns_lane: { Args: { p_job_id: string }; Returns: boolean }
       is_admin: { Args: never; Returns: boolean }
       reassign_instructor_job_assignment: {
         Args: { p_exclude_assignment_ids: string[]; p_job_id: string }
