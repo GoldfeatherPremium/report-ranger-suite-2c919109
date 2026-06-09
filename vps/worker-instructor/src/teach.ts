@@ -36,6 +36,7 @@ Commands (act on the numbered elements shown above):
   clickclass <i>         click class link #i, recorded as the configured class name
   clickassign <i>        click assignment link #i, recorded as the configured assignment name
   clicktext <text...>    click the element whose visible text matches
+  clickany <a> | <b>...  click the first option present (e.g. Resubmit | Submit)
   viewassign <name...>   click "View" in the assignment row named <name>, recorded
                          as the configured assignment (dynamic)
   rowclick <action> | <row...>   click <action> in the row labelled <row>
@@ -243,6 +244,21 @@ async function execute(
         if (!el) return { action: null, error: `no visible element with text "${text}"` };
         await el.handle.click({ timeout: 15_000 });
         return { action: { type: "clicktext", value: text, selector: el.selector, frame: el.frame, text: el.text } };
+      }
+      case "clickany": {
+        // clickany A | B | C  → click the first option present (most specific first)
+        const alts = rest.join(" ").split("|").map((s) => s.trim()).filter(Boolean);
+        if (!alts.length) return { action: null, error: "usage: clickany <a> | <b> ...  (e.g. clickany Resubmit | Submit)" };
+        for (const alt of alts) {
+          const needle = alt.toLowerCase();
+          const el = els.find((e) => e.text.toLowerCase() === needle)
+            ?? els.find((e) => e.text.toLowerCase().includes(needle));
+          if (el) {
+            await el.handle.click({ timeout: 15_000 });
+            return { action: { type: "clickany", value: alts.join(" | "), frame: el.frame, text: el.text } };
+          }
+        }
+        return { action: null, error: `none of [${alts.join(", ")}] found on screen` };
       }
       case "viewassign": {
         const name = rest.join(" ");

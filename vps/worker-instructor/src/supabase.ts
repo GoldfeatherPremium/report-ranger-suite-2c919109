@@ -41,11 +41,11 @@ export type InstructorAccount = {
 
 // A single recorded action in a learned flow / training step.
 export type FlowAction = {
-  type: "click" | "clicktext" | "clickrow" | "clicknth" | "fill" | "press" | "goto" | "wait" | "waittext" | "scroll" | "upload";
+  type: "click" | "clicktext" | "clickany" | "clickrow" | "clicknth" | "fill" | "press" | "goto" | "wait" | "waittext" | "scroll" | "upload";
   selector?: string;   // durable selector for replay
   frame?: number;      // frame index the element lived in
   text?: string;       // visible text of the element (for human readability / fallback)
-  value?: string;      // fill value, url, ms, row label, lane index, or a <<PLACEHOLDER>> resolved at replay
+  value?: string;      // fill value, url, ms, row label, lane index, "a | b" alternatives, or a <<PLACEHOLDER>>
   actionText?: string; // clickrow: the in-row action link; clicknth: the match needle (e.g. "Display actions menu")
   key?: string;        // key name for "press"
   note?: string;       // free-form operator note
