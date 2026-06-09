@@ -200,23 +200,23 @@ export function metaOf(els: DetectedElement[]): ElementMeta[] {
   return els.map(({ handle: _h, ...m }) => m);
 }
 
-// A "hard" click: move the real mouse to the element's centre and click there.
-// Turnitin's Stencil web components (e.g. <tli-workflow-instructor-actions-menu>)
-// register as intercepting pointer events, which makes Playwright's normal
-// actionability click time out. A raw coordinate click lands on whatever pixel
-// the element occupies, bypassing that check. Falls back to a forced click if
-// the element has no box.
+// A "hard" click for elements that Stencil web components guard with pointer-
+// event interception (which makes a normal Playwright click time out). Primary
+// path is a forced click on the element itself — Playwright clicks the element's
+// own centre and resolves iframe offsets internally, while `force` skips the
+// interception/actionability assertions. Falls back to a raw coordinate click.
 export async function hardClick(page: Page, target: ElementHandle | Locator): Promise<void> {
-  await target.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
-  const box = await target.boundingBox();
-  if (!box) {
-    await (target as unknown as ElementHandle).click({ force: true, timeout: 8_000 });
+  try {
+    await (target as unknown as { click: (o: object) => Promise<void> }).click({ force: true, timeout: 6_000 });
     return;
+  } catch { /* fall back to a raw coordinate click */ }
+  const box = await target.boundingBox();
+  if (box) {
+    const x = box.x + box.width / 2;
+    const y = box.y + box.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.click(x, y);
   }
-  const x = box.x + box.width / 2;
-  const y = box.y + box.height / 2;
-  await page.mouse.move(x, y);
-  await page.mouse.click(x, y);
 }
 
 // Click any element whose visible text contains `needle`, using Playwright's
@@ -227,12 +227,10 @@ export async function clickByText(page: Page, needle: string): Promise<{ status:
   const frames = page.frames();
   for (let fi = 0; fi < frames.length; fi++) {
     try {
-      const loc = frames[fi].getByText(needle, { exact: false }).first();
+      const loc = frames[fi].getByText(needle, { exact: false }).filter({ visible: true }).first();
       if ((await loc.count()) === 0) continue;
-      if (await loc.isVisible().catch(() => false)) {
-        await hardClick(page, loc);
-        return { status: "ok", frame: fi };
-      }
+      await hardClick(page, loc);
+      return { status: "ok", frame: fi };
     } catch { /* try next frame */ }
   }
   return { status: "not-found", frame: -1 };
