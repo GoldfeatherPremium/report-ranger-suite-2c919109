@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import type { BrowserContext, Page } from "playwright";
 import {
   clickByText, clickInRow, clickButtonByName, setFileInput, clickNthByText,
-  readLaneScores, clickAnyText, clickIfText, homeUrlFor,
+  readLaneScores, clickAnyText, clickIfText, homeUrlFor, waitForCountByText,
 } from "./browser.js";
 import {
   type Job, type AssignmentInfo, downloadSource, uploadReport, markJobSubmitted,
@@ -39,9 +39,11 @@ export async function processJob(
     await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => {});
     await touchJob(job.id);
     if ((await clickInRow(page, assignment.assignment_label, "View")).status !== "ok") throw new Error(`assignment "${assignment.assignment_label}" View not found`);
-    await sleep(NAV_WAIT_MS);
 
-    // 2. Open lane 3-dots → Resubmit/Submit → (Confirm)
+    // 2. Wait for the submission rows to render, then open the lane's 3-dots.
+    if (await waitForCountByText(page, "Display actions menu", lane + 1, 45_000) < 0) {
+      throw new Error(`submission list never showed ${lane + 1} rows (lane ${lane}) after View`);
+    }
     if (!(await clickNthByText(page, "Display actions menu", lane))) throw new Error(`lane ${lane} actions menu not found`);
     await sleep(1200);
     if (!(await clickAnyText(page, ["Resubmit", "Submit"]))) throw new Error("Resubmit/Submit not found");
@@ -77,6 +79,7 @@ export async function processJob(
     if (!sim) throw new Error("Similarity score did not arrive within 20 min");
 
     // 5. Open the report (opens in a new tab)
+    await waitForCountByText(page, "Similarity:", lane + 1, 15_000);
     if (!(await clickNthByText(page, "Similarity:", lane))) throw new Error("could not open the similarity report");
     await sleep(2500);
     const report = newestPage(ctx) ?? page;

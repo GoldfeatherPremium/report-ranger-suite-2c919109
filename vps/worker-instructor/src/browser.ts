@@ -401,6 +401,22 @@ export async function readLaneScores(page: Page, lane: number): Promise<{ sim: s
   return { sim, ai };
 }
 
+// Poll until at least `minCount` elements contain `needle` (i.e. the list/rows
+// have rendered), returning the count, or -1 on timeout. Lets replay wait for a
+// slow Feedback Studio table instead of racing it with a fixed sleep.
+export async function waitForCountByText(page: Page, needle: string, minCount: number, timeoutMs: number): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  const nd = needle.toLowerCase();
+  while (Date.now() < deadline) {
+    const els = await extractElements(page);
+    const c = els.filter((e) => e.text.toLowerCase().includes(nd)).length;
+    await disposeAll(els);
+    if (c >= minCount) return c;
+    await page.waitForTimeout(1500);
+  }
+  return -1;
+}
+
 // Click the first present of several texts (e.g. ["Resubmit", "Submit"]).
 export async function clickAnyText(page: Page, alts: string[]): Promise<boolean> {
   for (const t of alts) if ((await clickByText(page, t)).status === "ok") return true;
