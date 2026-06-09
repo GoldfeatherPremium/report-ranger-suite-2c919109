@@ -148,11 +148,18 @@ async function locateInAnyFrame(page: Page, selector: string): Promise<ElementHa
 }
 
 export async function screenshot(page: Page): Promise<Buffer> {
+  // Let the page settle and actually paint before capturing — heavy SPA/iframe
+  // transitions (Feedback Studio) otherwise yield a blank white frame.
+  await page.waitForLoadState("networkidle", { timeout: 6_000 }).catch(() => {});
+  await page.evaluate(() => new Promise<void>((res) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => res()));
+  })).catch(() => {});
+  await page.waitForTimeout(700);
   try {
-    return await page.screenshot({ fullPage: true, timeout: 20_000 });
+    return await page.screenshot({ fullPage: true, animations: "disabled", timeout: 20_000 });
   } catch {
     // Some Turnitin pages never settle for a full-page shot — fall back to viewport.
-    return await page.screenshot({ fullPage: false, timeout: 20_000 });
+    return await page.screenshot({ fullPage: false, animations: "disabled", timeout: 20_000 });
   }
 }
 
