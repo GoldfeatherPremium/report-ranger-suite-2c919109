@@ -130,6 +130,15 @@ export async function uploadDownload(sessionId: string, filename: string, buf: B
   return data?.signedUrl ?? null;
 }
 
+// Uploads a per-step RUN diagnostic screenshot to the training bucket.
+export async function uploadDiag(jobId: string, label: string, buf: Buffer): Promise<string | null> {
+  const path = `run/${jobId}/${label}.png`;
+  const { error } = await supabase.storage.from("training").upload(path, buf, { contentType: "image/png", upsert: true });
+  if (error) { console.error("diag upload:", error.message); return null; }
+  const { data } = await supabase.storage.from("training").createSignedUrl(path, 60 * 60 * 24 * 7);
+  return data?.signedUrl ?? null;
+}
+
 export async function recordStep(args: {
   sessionId: string; idx: number; pageUrl: string; pageTitle: string;
   screenshotPath: string; elements: ElementMeta[]; action: FlowAction | null;

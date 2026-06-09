@@ -5,13 +5,15 @@ import type { BrowserContext, Page } from "playwright";
 import {
   clickByText, clickInRow, clickButtonByName, setFileInput, clickNthByText,
   readLaneScores, clickAnyText, clickIfText, homeUrlFor, waitForCountByText,
+  waitForText, screenshot,
 } from "./browser.js";
 import {
   type Job, type AssignmentInfo, downloadSource, uploadReport, markJobSubmitted,
-  markJobDone, setAiReportStatus, touchJob, logJob,
+  markJobDone, setAiReportStatus, touchJob, logJob, uploadDiag,
 } from "./supabase.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const DIAG = (process.env.RUN_DIAG ?? "1") !== "0"; // per-step screenshots + verbose logs
 
 const COOLDOWN_MS = 60_000;             // sleep after submit before polling
 const AI_TOTAL_TIMEOUT_MS = 20 * 60_000; // 20 min from submit for AI to arrive
@@ -28,6 +30,15 @@ export async function processJob(
   const page = await ctx.newPage();
   const tmpFile = join(tmpdir(), `${job.id}-${job.original_name.replace(/[^\w.\-]+/g, "_")}`);
 
+  let diagN = 0;
+  const diag = async (p: Page, label: string) => {
+    if (!DIAG) return;
+    try {
+      const url = await uploadDiag(job.id, `${String(++diagN).padStart(2, "0")}-${label}`, await screenshot(p));
+      await log("info", `[diag ${label}] url=${p.url()} shot=${url ?? "n/a"}`);
+    } catch (e) { await log("warn", `[diag ${label}] ${e instanceof Error ? e.message : e}`); }
+  };
+
   try {
     await writeFile(tmpFile, await downloadSource(job.source_path));
     await log("info", `start job ${job.id} (${job.original_name}) → "${assignment.class_label}" / "${assignment.assignment_label}" lane ${lane}`);
@@ -35,30 +46,60 @@ export async function processJob(
     // 1. Home → class → assignment
     await page.goto(homeUrlFor(assignment.account.login_url), { waitUntil: "domcontentloaded", timeout: 60_000 });
     await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {});
-    if ((await clickByText(page, assignment.class_label)).status !== "ok") throw new Error(`class "${assignment.class_label}" not found`);
+    await diag(page, "home");
+    if ((await clickByText(page, assignment.class_label)).status !== "ok") throw new Error(`class "${assignment.class_label}" not found on home`);
     await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => {});
     await touchJob(job.id);
+    await diag(page, "class");
     if ((await clickInRow(page, assignment.assignment_label, "View")).status !== "ok") throw new Error(`assignment "${assignment.assignment_label}" View not found`);
 
     // 2. Wait for the submission rows to render, then open the lane's 3-dots.
-    if (await waitForCountByText(page, "Display actions menu", lane + 1, 45_000) < 0) {
-      throw new Error(`submission list never showed ${lane + 1} rows (lane ${lane}) after View`);
-    }
+    const rows = await waitForCountByText(page, "Display actions menu", lane + 1, 45_000);
+    await log("info", `submission rows visible: ${rows}`);
+    await diag(page, "submissions-list");
+    if (rows < 0) throw new Error(`submission list never showed ${lane + 1} rows (lane ${lane}) after View`);
     if (!(await clickNthByText(page, "Display actions menu", lane))) throw new Error(`lane ${lane} actions menu not found`);
-    await sleep(1200);
-    if (!(await clickAnyText(page, ["Resubmit", "Submit"]))) throw new Error("Resubmit/Submit not found");
     await sleep(1500);
-    await clickIfText(page, "Confirm"); // optional — present only on the Resubmit path
+    await diag(page, "menu-open");
+    if (!(await waitForText(page, "Resubmit", 4_000)) && !(await waitForText(page, "Open report", 2_000))) {
+      throw new Error("the 3-dots menu did not open (no Resubmit/Open report visible) — lane click had no effect");
+    }
+
+    // Resubmit (or Submit on an empty slot), then the optional Confirm.
+    const rs = await clickAnyText(page, ["Resubmit", "Submit"]);
+    await log("info", `clicked resubmit/submit: ${rs}`);
+    if (!rs) throw new Error("Resubmit/Submit not found in the menu");
+    await sleep(2000);
+    const confirmed = await clickIfText(page, "Confirm");
+    await log("info", `confirm dialog: ${confirmed ? "clicked" : "absent"}`);
     await sleep(2500);
+    await diag(page, "upload-dialog");
+    if (!(await waitForText(page, "Submit file", 6_000)) && !(await waitForText(page, "Drag and drop", 2_000))) {
+      throw new Error("the upload dialog never appeared after Resubmit/Submit");
+    }
 
     // 3. Attach → Upload and Preview → Submit
-    if (!(await setFileInput(page, tmpFile)).ok) throw new Error("file input not found");
-    await sleep(2500);
-    if ((await clickButtonByName(page, "Upload and Preview")).status !== "ok") throw new Error("'Upload and Preview' not clickable");
-    if ((await clickButtonByName(page, "Submit")).status !== "ok") throw new Error("'Submit' not clickable");
+    if (!(await setFileInput(page, tmpFile)).ok) throw new Error("file input not found in the upload dialog");
+    await sleep(3000);
+    await diag(page, "after-attach");
+    const up = await clickButtonByName(page, "Upload and Preview");
+    await log("info", `'Upload and Preview' → ${up.status}`);
+    if (up.status !== "ok") throw new Error("'Upload and Preview' button not clickable/enabled");
+    await sleep(2000);
+    await diag(page, "preview");
+    const sub = await clickButtonByName(page, "Submit");
+    await log("info", `'Submit' → ${sub.status}`);
+    if (sub.status !== "ok") throw new Error("'Submit' button not clickable/enabled");
+    await sleep(3000);
+    await diag(page, "after-submit");
+
+    // Verify the submission actually registered before cooling down.
+    if (!(await waitForText(page, "submitted successfully", 15_000))) {
+      throw new Error("never saw 'File submitted successfully' — the submission did not register");
+    }
     const submittedAt = Date.now();
     await markJobSubmitted(job.id, `instructor:${assignment.assignment_id}:lane${lane}`);
-    await log("info", "submitted — cooldown 60s, then poll for scores");
+    await log("info", "submitted (confirmed) — cooldown 60s, then poll for scores");
 
     // 4. Cooldown + poll until both scores or 20 min from submit
     await sleep(COOLDOWN_MS);
@@ -76,6 +117,7 @@ export async function processJob(
       if (sim && ai) break;
       await sleep(POLL_INTERVAL_MS);
     }
+    await diag(page, "scores");
     if (!sim) throw new Error("Similarity score did not arrive within 20 min");
 
     // 5. Open the report (opens in a new tab)
@@ -85,6 +127,7 @@ export async function processJob(
     const report = newestPage(ctx) ?? page;
     await report.waitForLoadState("networkidle", { timeout: 20_000 }).catch(() => {});
     await sleep(6000);
+    await diag(report, "report-viewer");
 
     // 6. Download the Similarity report
     const simPdf = await captureDownload(report, async () => {

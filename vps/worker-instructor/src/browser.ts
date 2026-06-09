@@ -417,6 +417,21 @@ export async function waitForCountByText(page: Page, needle: string, minCount: n
   return -1;
 }
 
+// Wait until some visible element contains `needle` (any frame), up to timeoutMs.
+export async function waitForText(page: Page, needle: string, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    for (const frame of page.frames()) {
+      try {
+        const loc = frame.getByText(needle, { exact: false }).filter({ visible: true }).first();
+        if ((await loc.count()) > 0) return true;
+      } catch { /* frame busy */ }
+    }
+    await page.waitForTimeout(1000);
+  }
+  return false;
+}
+
 // Click the first present of several texts (e.g. ["Resubmit", "Submit"]).
 export async function clickAnyText(page: Page, alts: string[]): Promise<boolean> {
   for (const t of alts) if ((await clickByText(page, t)).status === "ok") return true;
