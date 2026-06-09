@@ -43,9 +43,11 @@ Commands (act on the numbered elements shown above):
   viewassign <name...>   click "View" in the assignment row named <name>, recorded
                          as the configured assignment (dynamic)
   rowclick <action> | <row...>   click <action> in the row labelled <row>
-  menulane <i>           click the 3-dots "Display actions menu" in lane #i (0-based),
+  menulane <i>           hard-click the 3-dots "Display actions menu" in lane #i (0-based),
                          recorded as the worker's assigned lane (dynamic)
-  clicknth <i> <needle...>   click the i-th element whose label contains <needle>
+  laneclick <i> <needle...>  hard-click the i-th match of <needle>, recorded as the
+                         worker's lane (e.g. laneclick 0 Similarity:)
+  clicknth <i> <needle...>   hard-click the i-th element whose label contains <needle>
   fill <i> <value...>    type a value into element #i
   upload <i> [path]      attach a file to file-input #i (default: TEACH_SAMPLE_FILE)
   press <Key>            press a keyboard key (e.g. press Enter)
@@ -325,9 +327,20 @@ async function execute(
           const found = els.filter((e) => e.text.toLowerCase().includes(needle.toLowerCase())).length;
           return { action: null, error: `lane #${i} 3-dots not found (matched ${found} "${needle}" buttons)` };
         }
-        await el.handle.click({ timeout: 15_000 });
+        await hardClick(page, el.handle);
         // Record dynamically: replay clicks the lane assigned to this worker.
         return { action: { type: "clicknth", value: "<<LANE_INDEX>>", actionText: needle, frame: el.frame, text: `lane ${i} actions menu` } };
+      }
+      case "laneclick": {
+        // laneclick <i> <needle> → hard-click the i-th match of <needle>, recorded
+        // as the worker's lane (<<LANE_INDEX>>). e.g. laneclick 0 Similarity:
+        const i = Number(rest[0]);
+        const needle = rest.slice(1).join(" ");
+        if (!Number.isInteger(i) || i < 0 || !needle) return { action: null, error: "usage: laneclick <i> <needle...>" };
+        const el = await nthMatching(els, needle, i);
+        if (!el) return { action: null, error: `lane #${i} match for "${needle}" not found` };
+        await hardClick(page, el.handle);
+        return { action: { type: "clicknth", value: "<<LANE_INDEX>>", actionText: needle, frame: el.frame, text: `lane ${i} ${needle}` } };
       }
       case "clicknth": {
         const i = Number(rest[0]);
@@ -335,7 +348,7 @@ async function execute(
         if (!Number.isInteger(i) || i < 0 || !needle) return { action: null, error: "usage: clicknth <i> <needle...>" };
         const el = await nthMatching(els, needle, i);
         if (!el) return { action: null, error: `match #${i} for "${needle}" not found` };
-        await el.handle.click({ timeout: 15_000 });
+        await hardClick(page, el.handle);
         return { action: { type: "clicknth", value: String(i), actionText: needle, frame: el.frame, text: needle } };
       }
       case "fill": {
