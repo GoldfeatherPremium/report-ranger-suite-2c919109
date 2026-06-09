@@ -58,6 +58,9 @@ Commands (act on the numbered elements shown above):
   shot                   re-capture the current screen (no action recorded)
   reload                 reload the current page, then re-capture (recovery)
   relogin                re-run the whole login flow, then re-capture (recovery)
+  tabs                   list open browser tabs
+  switchtab [n]          switch active tab to #n (default: newest)
+  closetab               close the current tab and return to the previous one
   done [name...]         save the recorded sequence as a flow and exit
   abort                  discard and exit
   help                   show this help
@@ -71,7 +74,9 @@ async function main() {
 
   const sessionPath = sessionFile(account.id);
   const haveSession = existsSync(sessionPath) && !FRESH;
-  const { browser, context, page } = await launch(HEADLESS, haveSession ? sessionPath : undefined);
+  const launched = await launch(HEADLESS, haveSession ? sessionPath : undefined);
+  const { browser, context } = launched;
+  let page = launched.page; // mutable: follows new tabs (report viewer opens in one)
   const sessionId = await createSession(account.id, WORKER_ID, `teach ${account.label}`);
   await log(WORKER_ID, "info", `teaching session ${sessionId} for ${account.label}`);
 
@@ -111,6 +116,12 @@ async function main() {
     // Outer loop: capture → show → act → repeat
     // eslint-disable-next-line no-constant-condition
     while (true) {
+      // Follow the newest tab — clicking a Similarity/AI score opens the report
+      // viewer in a new browser tab, so the active page must switch to it.
+      const np = newestPage(context);
+      if (np && np !== page) { page = np; console.log(`  · followed new tab → ${page.url()}`); }
+      await page.bringToFront().catch(() => {});
+
       await page.waitForLoadState("networkidle", { timeout: 8_000 }).catch(() => {});
       const png = await screenshot(page);
       const { path, signedUrl } = await uploadScreenshot(sessionId, idx, png);
@@ -139,6 +150,30 @@ async function main() {
           await saveSession(context, sessionPath).catch(() => {});
           console.log("  · session saved");
         } catch (e) { console.log(`  ⚠️  relogin failed: ${e instanceof Error ? e.message : String(e)}`); }
+        await disposeAll(els);
+        continue;
+      }
+      if (cmd === "tabs") {
+        context.pages().filter((p) => !p.isClosed()).forEach((p, i) => console.log(`  [tab ${i}] ${p === page ? "* " : "  "}${p.url()}`));
+        await disposeAll(els);
+        continue;
+      }
+      if (cmd === "switchtab") {
+        const open = context.pages().filter((p) => !p.isClosed());
+        const n = Number(rest[0]);
+        page = (Number.isInteger(n) && open[n]) ? open[n] : (open[open.length - 1] ?? page);
+        await page.bringToFront().catch(() => {});
+        console.log(`  · switched to ${page.url()}`);
+        await disposeAll(els);
+        continue;
+      }
+      if (cmd === "closetab") {
+        if (context.pages().filter((p) => !p.isClosed()).length > 1) {
+          await page.close().catch(() => {});
+          page = newestPage(context) ?? page;
+          await page.bringToFront().catch(() => {});
+          console.log(`  · closed tab, now on ${page.url()}`);
+        } else { console.log("  · only one tab open — not closing"); }
         await disposeAll(els);
         continue;
       }
@@ -205,6 +240,12 @@ function printScreen(idx: number, page: Page, title: string, signedUrl: string |
 // contains `needle`, using the live Playwright handles — which pierce shadow DOM
 // (Turnitin's Feedback Studio renders the submission list inside web components,
 // invisible to an in-page querySelectorAll).
+// The most recently opened, still-open tab in the context.
+function newestPage(context: import("playwright").BrowserContext): Page | undefined {
+  const open = context.pages().filter((p) => !p.isClosed());
+  return open[open.length - 1];
+}
+
 async function nthMatching(els: DetectedElement[], needle: string, n: number): Promise<DetectedElement | null> {
   const nd = needle.toLowerCase();
   const cands = els.filter((e) => e.text.toLowerCase().includes(nd));
