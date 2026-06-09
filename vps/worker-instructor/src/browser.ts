@@ -196,6 +196,24 @@ export async function extractElements(page: Page): Promise<DetectedElement[]> {
   return out;
 }
 
+// Attach a file to the first <input type=file> found in any frame, even if it's
+// visually hidden (Turnitin's "Browse Files" button hides the real input).
+// setInputFiles does not require the input to be visible.
+export async function setFileInput(page: Page, filePath: string): Promise<{ ok: boolean; frame: number }> {
+  const frames = page.frames();
+  for (let fi = 0; fi < frames.length; fi++) {
+    try {
+      const input = await frames[fi].$('input[type="file"]');
+      if (input) {
+        await input.setInputFiles(filePath);
+        await input.dispose().catch(() => {});
+        return { ok: true, frame: fi };
+      }
+    } catch { /* try next frame */ }
+  }
+  return { ok: false, frame: -1 };
+}
+
 export function metaOf(els: DetectedElement[]): ElementMeta[] {
   return els.map(({ handle: _h, ...m }) => m);
 }

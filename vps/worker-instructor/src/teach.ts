@@ -9,7 +9,7 @@ import {
   recordStep, saveFlow, log, type FlowAction,
 } from "./supabase.js";
 import {
-  launch, login, screenshot, extractElements, metaOf, disposeAll, clickInRow, clickByText, hardClick,
+  launch, login, screenshot, extractElements, metaOf, disposeAll, clickInRow, clickByText, hardClick, setFileInput,
   isLoggedIn, saveSession, homeUrlFor, type DetectedElement,
 } from "./browser.js";
 import type { Page } from "playwright";
@@ -37,6 +37,8 @@ Commands (act on the numbered elements shown above):
   clickassign <i>        click assignment link #i, recorded as the configured assignment name
   clicktext <text...>    click the element whose visible text matches
   clickany <a> | <b>...  click the first option present (e.g. Resubmit | Submit)
+  clickif <text...>      click if present, else skip (optional step, e.g. Confirm)
+  attach [path]          attach a document to the file input (default sample; recorded as the job file)
   viewassign <name...>   click "View" in the assignment row named <name>, recorded
                          as the configured assignment (dynamic)
   rowclick <action> | <row...>   click <action> in the row labelled <row>
@@ -249,6 +251,27 @@ async function execute(
         const r = await clickByText(page, text);
         if (r.status === "ok") return { action: { type: "clicktext", value: text, frame: r.frame, text } };
         return { action: null, error: `no visible element with text "${text}"` };
+      }
+      case "clickif": {
+        // Optional click: click if present, otherwise skip without failing.
+        // Used for the Resubmit "Confirm" dialog, which is absent on the Submit path.
+        const text = rest.join(" ");
+        if (!text) return { action: null, error: "clickif needs some text" };
+        const needle = text.toLowerCase();
+        const el = els.find((e) => e.text.toLowerCase() === needle)
+          ?? els.find((e) => e.text.toLowerCase().includes(needle));
+        let clicked = false;
+        if (el) { await hardClick(page, el.handle); clicked = true; }
+        else { clicked = (await clickByText(page, text)).status === "ok"; }
+        console.log(`  · clickif "${text}": ${clicked ? "clicked" : "not present — skipped"}`);
+        return { action: { type: "clickif", value: text, text } };
+      }
+      case "attach": {
+        const file = rest[0] || SAMPLE_FILE;
+        const r = await setFileInput(page, file);
+        if (!r.ok) return { action: null, error: "no <input type=file> found on this screen" };
+        // Replay substitutes the real job document for this placeholder.
+        return { action: { type: "upload", value: "<<JOB_FILE>>", frame: r.frame, text: `attach ${file}` } };
       }
       case "clickany": {
         // clickany A | B | C  → click the first option present (most specific first)
