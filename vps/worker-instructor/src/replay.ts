@@ -93,9 +93,14 @@ export async function processJob(
     await sleep(3000);
     await diag(page, "after-submit");
 
-    // Verify the submission actually registered before cooling down.
-    if (!(await waitForText(page, "submitted successfully", 15_000))) {
-      throw new Error("never saw 'File submitted successfully' — the submission did not register");
+    // Verify the submission registered. Turnitin shows a blue "Your file is
+    // processing." toast immediately, then (seconds later) a green "File
+    // submitted successfully." toast — EITHER one confirms the submission.
+    const processing = await waitForText(page, "file is processing", 25_000);
+    const submitted = processing ? true : await waitForText(page, "submitted successfully", 15_000);
+    await log("info", `submission confirmation: ${processing ? "processing toast" : submitted ? "submitted toast" : "NONE"}`);
+    if (!submitted) {
+      throw new Error("no submission confirmation toast (processing/submitted) appeared — submission did not register");
     }
     const submittedAt = Date.now();
     await markJobSubmitted(job.id, `instructor:${assignment.assignment_id}:lane${lane}`);
