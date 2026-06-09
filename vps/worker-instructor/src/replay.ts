@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import type { BrowserContext, Page } from "playwright";
 import {
   clickByText, clickInRow, clickButtonByName, setFileInput, clickNthByText,
-  readLaneScores, clickAnyText, clickIfText, homeUrlFor, waitForCountByText,
-  waitForText, screenshot,
+  clickAnyText, clickIfText, homeUrlFor, waitForCountByText, waitForText, screenshot,
+  readScoresForTitle, clickSimilarityForTitle, waitForTitleRow,
 } from "./browser.js";
 import {
   type Job, type AssignmentInfo, downloadSource, uploadReport, markJobSubmitted,
@@ -80,6 +80,7 @@ export async function processJob(
 
     // 3. Attach → Upload and Preview → Submit
     if (!(await setFileInput(page, tmpFile)).ok) throw new Error("file input not found in the upload dialog");
+    await log("info", `attached document "${job.original_name}" (job ${job.id}) to lane ${lane} — Turnitin title will contain this id`);
     await sleep(3000);
     await diag(page, "after-attach");
     const up = await clickButtonByName(page, "Upload and Preview");
@@ -106,7 +107,9 @@ export async function processJob(
     await markJobSubmitted(job.id, `instructor:${assignment.assignment_id}:lane${lane}`);
     await log("info", "submitted (confirmed) — cooldown 60s, then poll for scores");
 
-    // 4. Cooldown + poll until both scores or 20 min from submit
+    // 4. Cooldown, then poll OUR OWN row (matched by the uploaded document id —
+    //    the list re-sorts, so lane position is unreliable) every 30s until BOTH
+    //    scores arrive or 20 min from submit elapses.
     await sleep(COOLDOWN_MS);
     let sim: string | null = null;
     let ai: string | null = null;
@@ -114,20 +117,23 @@ export async function processJob(
       await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 }).catch(() => {});
       await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {});
       await sleep(4000);
-      const s = await readLaneScores(page, lane);
+      const s = await readScoresForTitle(page, job.id);
       if (s.sim) sim = s.sim;
       if (s.ai) ai = s.ai;
       await touchJob(job.id);
-      await log("info", `poll lane ${lane}: similarity=${sim ?? "--"} ai=${ai ?? "--"}`);
+      const mins = Math.round((Date.now() - submittedAt) / 60000);
+      await log("info", `poll [doc ${job.id} lane ${lane}, +${mins}m]: similarity=${sim ?? "--"} ai=${ai ?? "--"}`);
       if (sim && ai) break;
       await sleep(POLL_INTERVAL_MS);
     }
     await diag(page, "scores");
-    if (!sim) throw new Error("Similarity score did not arrive within 20 min");
+    if (!sim) throw new Error(`Similarity score for our document (${job.id}) did not arrive within 20 min`);
+    if (!ai) await log("warn", `AI score for our document did not arrive in 20 min — delivering Similarity only`);
 
-    // 5. Open the report (opens in a new tab)
-    await waitForCountByText(page, "Similarity:", lane + 1, 15_000);
-    if (!(await clickNthByText(page, "Similarity:", lane))) throw new Error("could not open the similarity report");
+    // 5. Open OUR document's report (matched by id, not lane) — opens a new tab.
+    if (!(await waitForTitleRow(page, job.id, 15_000))) throw new Error(`our submission row (${job.id}) not visible`);
+    await log("info", `opening report for our document ${job.id} (lane ${lane})`);
+    if (!(await clickSimilarityForTitle(page, job.id))) throw new Error(`could not open the similarity report for our document (${job.id})`);
     await sleep(2500);
     const report = newestPage(ctx) ?? page;
     await report.waitForLoadState("networkidle", { timeout: 20_000 }).catch(() => {});

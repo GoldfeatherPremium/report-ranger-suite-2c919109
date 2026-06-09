@@ -401,6 +401,52 @@ export async function readLaneScores(page: Page, lane: number): Promise<{ sim: s
   return { sim, ai };
 }
 
+// ── Identity-based row matching ──────────────────────────────────────────────
+// Turnitin's submission cells carry the document title in their accessible name
+// (e.g. "Similarity: 64%. View submission for X titled <TITLE>"). Since the list
+// re-sorts after a submit, we locate the worker's OWN row by the unique title it
+// uploaded (the filename contains the job id) instead of by lane position.
+
+// Read the Similarity + AI scores for the row whose title contains `titleNeedle`.
+export async function readScoresForTitle(page: Page, titleNeedle: string): Promise<{ sim: string | null; ai: string | null }> {
+  const els = await extractElements(page);
+  try {
+    const t = titleNeedle.toLowerCase();
+    const simEl = els.find((e) => { const x = e.text.toLowerCase(); return x.includes("similarity:") && x.includes(t); });
+    const aiEl = els.find((e) => { const x = e.text.toLowerCase(); return x.includes("ai writing:") && x.includes(t); });
+    return {
+      sim: simEl?.text.match(/similarity:\s*(\d{1,3})\s*%/i)?.[1] ?? null,
+      ai: aiEl?.text.match(/ai writing:\s*(\*|\d{1,3})\s*%/i)?.[1] ?? null,
+    };
+  } finally { await disposeAll(els); }
+}
+
+// Hard-click the Similarity cell of the row whose title contains `titleNeedle`.
+export async function clickSimilarityForTitle(page: Page, titleNeedle: string): Promise<boolean> {
+  const els = await extractElements(page);
+  try {
+    const t = titleNeedle.toLowerCase();
+    const el = els.find((e) => { const x = e.text.toLowerCase(); return x.includes("similarity:") && x.includes(t); });
+    if (!el) return false;
+    await hardClick(page, el.handle);
+    return true;
+  } finally { await disposeAll(els); }
+}
+
+// Wait until the worker's own row (title contains `titleNeedle`) is visible.
+export async function waitForTitleRow(page: Page, titleNeedle: string, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  const t = titleNeedle.toLowerCase();
+  while (Date.now() < deadline) {
+    const els = await extractElements(page);
+    const found = els.some((e) => e.text.toLowerCase().includes(t));
+    await disposeAll(els);
+    if (found) return true;
+    await page.waitForTimeout(1500);
+  }
+  return false;
+}
+
 // Poll until at least `minCount` elements contain `needle` (i.e. the list/rows
 // have rendered), returning the count, or -1 on timeout. Lets replay wait for a
 // slow Feedback Studio table instead of racing it with a fixed sleep.
