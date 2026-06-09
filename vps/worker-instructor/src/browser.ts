@@ -200,6 +200,26 @@ export function metaOf(els: DetectedElement[]): ElementMeta[] {
   return els.map(({ handle: _h, ...m }) => m);
 }
 
+// Click any element whose visible text contains `needle`, using Playwright's
+// text engine (case-insensitive substring). Unlike the captured-element list,
+// this finds plain <div>/<span> items too — e.g. Feedback Studio's dropdown
+// menu items ("Resubmit file", "Submit") which aren't standard controls.
+export async function clickByText(page: Page, needle: string): Promise<{ status: string; frame: number }> {
+  const frames = page.frames();
+  for (let fi = 0; fi < frames.length; fi++) {
+    try {
+      const loc = frames[fi].getByText(needle, { exact: false }).first();
+      if ((await loc.count()) === 0) continue;
+      await loc.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
+      if (await loc.isVisible().catch(() => false)) {
+        await loc.click({ timeout: 8_000 });
+        return { status: "ok", frame: fi };
+      }
+    } catch { /* try next frame */ }
+  }
+  return { status: "not-found", frame: -1 };
+}
+
 // Click an in-row action link (e.g. "View") that sits on the same visual row as
 // a label (e.g. an assignment name). Turnitin lists every assignment with an
 // identical "View" link, so we match by geometry: pick the action element whose

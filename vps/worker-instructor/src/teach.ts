@@ -9,7 +9,7 @@ import {
   recordStep, saveFlow, log, type FlowAction,
 } from "./supabase.js";
 import {
-  launch, login, screenshot, extractElements, metaOf, disposeAll, clickInRow,
+  launch, login, screenshot, extractElements, metaOf, disposeAll, clickInRow, clickByText,
   isLoggedIn, saveSession, homeUrlFor, type DetectedElement,
 } from "./browser.js";
 import type { Page } from "playwright";
@@ -241,9 +241,14 @@ async function execute(
         const needle = text.toLowerCase();
         const el = els.find((e) => e.text.toLowerCase() === needle)
           ?? els.find((e) => e.text.toLowerCase().includes(needle));
-        if (!el) return { action: null, error: `no visible element with text "${text}"` };
-        await el.handle.click({ timeout: 15_000 });
-        return { action: { type: "clicktext", value: text, selector: el.selector, frame: el.frame, text: el.text } };
+        if (el) {
+          await el.handle.click({ timeout: 15_000 });
+          return { action: { type: "clicktext", value: text, selector: el.selector, frame: el.frame, text: el.text } };
+        }
+        // Fall back to Playwright's text engine for non-standard elements (menu <div>s).
+        const r = await clickByText(page, text);
+        if (r.status === "ok") return { action: { type: "clicktext", value: text, frame: r.frame, text } };
+        return { action: null, error: `no visible element with text "${text}"` };
       }
       case "clickany": {
         // clickany A | B | C  → click the first option present (most specific first)
@@ -257,6 +262,8 @@ async function execute(
             await el.handle.click({ timeout: 15_000 });
             return { action: { type: "clickany", value: alts.join(" | "), frame: el.frame, text: el.text } };
           }
+          const r = await clickByText(page, alt);
+          if (r.status === "ok") return { action: { type: "clickany", value: alts.join(" | "), frame: r.frame, text: alt } };
         }
         return { action: null, error: `none of [${alts.join(", ")}] found on screen` };
       }
