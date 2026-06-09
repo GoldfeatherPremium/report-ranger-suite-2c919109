@@ -1,23 +1,54 @@
 import "./load-env.js";
 import * as readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
+import { existsSync, mkdirSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { dirname, resolve, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   getInstructorAccount, createSession, finishSession, uploadScreenshot,
-  recordStep, saveFlow, log, type FlowAction,
+  recordStep, saveFlow, log, uploadDownload, type FlowAction,
 } from "./supabase.js";
-import { launch, login, screenshot, extractElements, metaOf, disposeAll, type DetectedElement } from "./browser.js";
+import {
+  launch, login, screenshot, extractElements, metaOf, disposeAll, clickInRow, clickByText, hardClick,
+  setFileInput, clickButtonByName, isLoggedIn, saveSession, homeUrlFor, type DetectedElement,
+} from "./browser.js";
 import type { Page } from "playwright";
+
+// Where the reusable per-account session (cookies) is stored on disk.
+function sessionFile(accountId: string): string {
+  const dir = resolve(dirname(fileURLToPath(import.meta.url)), "..", ".sessions");
+  mkdirSync(dir, { recursive: true });
+  return join(dir, `${accountId}.json`);
+}
 
 const WORKER_ID = process.env.WORKER_ID ?? `instructor-teach-${process.pid}`;
 const HEADLESS = (process.env.HEADLESS ?? "true") === "true";
 const SAMPLE_FILE = process.env.TEACH_SAMPLE_FILE ?? "./sample.docx";
 const ACCOUNT_LABEL = process.env.TEACH_ACCOUNT_LABEL;
+// Set TEACH_FRESH=1 to ignore any saved session and always log in live.
+const FRESH = /^(1|true|yes)$/i.test(process.env.TEACH_FRESH ?? "");
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const HELP = `
 Commands (act on the numbered elements shown above):
   click <i>              click element #i
+  clickclass <i>         click class link #i, recorded as the configured class name
+  clickassign <i>        click assignment link #i, recorded as the configured assignment name
+  clicktext <text...>    click the element whose visible text matches
+  clickany <a> | <b>...  click the first option present (e.g. Resubmit | Submit)
+  clickif <text...>      click if present, else skip (optional step, e.g. Confirm)
+  clickbtn <name...>     hard mouse-click a real button by name, waiting until enabled (e.g. Submit)
+  attach [path]          attach a document to the file input (default sample; recorded as the job file)
+  viewassign <name...>   click "View" in the assignment row named <name>, recorded
+                         as the configured assignment (dynamic)
+  rowclick <action> | <row...>   click <action> in the row labelled <row>
+  menulane <i>           hard-click the 3-dots "Display actions menu" in lane #i (0-based),
+                         recorded as the worker's assigned lane (dynamic)
+  laneclick <i> <needle...>  hard-click the i-th match of <needle>, recorded as the
+                         worker's lane (e.g. laneclick 0 Similarity:)
+  clicknth <i> <needle...>   hard-click the i-th element whose label contains <needle>
   fill <i> <value...>    type a value into element #i
   upload <i> [path]      attach a file to file-input #i (default: TEACH_SAMPLE_FILE)
   press <Key>            press a keyboard key (e.g. press Enter)
@@ -26,6 +57,11 @@ Commands (act on the numbered elements shown above):
   wait <ms>              pause N milliseconds, then re-capture
   scroll <px>            scroll vertically by px (e.g. scroll 600)
   shot                   re-capture the current screen (no action recorded)
+  reload                 reload the current page, then re-capture (recovery)
+  relogin                re-run the whole login flow, then re-capture (recovery)
+  tabs                   list open browser tabs
+  switchtab [n]          switch active tab to #n (default: newest)
+  closetab               close the current tab and return to the previous one
   done [name...]         save the recorded sequence as a flow and exit
   abort                  discard and exit
   help                   show this help
@@ -37,15 +73,55 @@ async function main() {
   console.log(`account : ${account.label} <${account.email}>`);
   console.log(`headless: ${HEADLESS}\n`);
 
-  const { browser, page } = await launch(HEADLESS);
+  const sessionPath = sessionFile(account.id);
+  const haveSession = existsSync(sessionPath) && !FRESH;
+  const launched = await launch(HEADLESS, haveSession ? sessionPath : undefined);
+  const { browser, context } = launched;
+  let page = launched.page; // mutable: follows new tabs (report viewer opens in one)
   const sessionId = await createSession(account.id, WORKER_ID, `teach ${account.label}`);
   await log(WORKER_ID, "info", `teaching session ${sessionId} for ${account.label}`);
 
-  try {
-    await login(page, account, (m) => console.log(`  · ${m}`));
-  } catch (e) {
-    console.error(`login failed: ${e instanceof Error ? e.message : String(e)}`);
-    console.error(`Continuing anyway — you can 'goto' the right URL or inspect the captured screen.`);
+  // Capture every download (report PDFs) so we can confirm the real file and
+  // verify it via a link — works no matter which tab/click triggers it.
+  context.on("download", (download) => {
+    void (async () => {
+      try {
+        const fname = download.suggestedFilename() || `download-${Date.now()}`;
+        const p = await download.path();
+        if (!p) { console.log(`  ⚠️  download "${fname}" produced no file`); return; }
+        const buf = await readFile(p);
+        const url = await uploadDownload(sessionId, `${Date.now()}-${fname}`, buf);
+        console.log(`  ⬇️  DOWNLOADED ${fname} — ${(buf.length / 1024).toFixed(0)} KB${url ? `\n      verify: ${url}` : ""}`);
+      } catch (e) { console.log(`  ⚠️  download capture failed: ${e instanceof Error ? e.message : e}`); }
+    })();
+  });
+
+  // Reuse a saved session only if it's REALLY still logged in; otherwise log in
+  // live with the configured credentials and save a fresh session.
+  let loggedIn = false;
+  if (haveSession) {
+    try {
+      await page.goto(homeUrlFor(account.login_url), { waitUntil: "domcontentloaded", timeout: 60_000 });
+      await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {});
+      loggedIn = await isLoggedIn(page);
+      console.log(loggedIn ? "  · reused saved session — login skipped" : "  · saved session expired — logging in live");
+    } catch { /* fall through to a fresh login */ }
+  } else if (FRESH) {
+    console.log("  · TEACH_FRESH set — ignoring any saved session, logging in live");
+  }
+  if (!loggedIn) {
+    try {
+      await login(page, account, (m) => console.log(`  · ${m}`));
+      loggedIn = await isLoggedIn(page);
+      if (!loggedIn) console.warn("  ⚠️  login submitted but no logged-in marker found — check the screen / credentials (try 'relogin').");
+    } catch (e) {
+      console.error(`login failed: ${e instanceof Error ? e.message : String(e)}`);
+      console.error("Continuing anyway — use 'relogin' or 'goto'.");
+    }
+  }
+  if (loggedIn) {
+    try { await saveSession(context, sessionPath); console.log("  · session saved (login will be skipped next time while valid)"); }
+    catch (e) { console.log(`  ⚠️  could not save session: ${e instanceof Error ? e.message : e}`); }
   }
 
   const rl = readline.createInterface({ input, output });
@@ -56,6 +132,12 @@ async function main() {
     // Outer loop: capture → show → act → repeat
     // eslint-disable-next-line no-constant-condition
     while (true) {
+      // Follow the newest tab — clicking a Similarity/AI score opens the report
+      // viewer in a new browser tab, so the active page must switch to it.
+      const np = newestPage(context);
+      if (np && np !== page) { page = np; console.log(`  · followed new tab → ${page.url()}`); }
+      await page.bringToFront().catch(() => {});
+
       await page.waitForLoadState("networkidle", { timeout: 8_000 }).catch(() => {});
       const png = await screenshot(page);
       const { path, signedUrl } = await uploadScreenshot(sessionId, idx, png);
@@ -69,6 +151,48 @@ async function main() {
 
       if (cmd === "help" || cmd === "?") { console.log(HELP); await disposeAll(els); continue; }
       if (cmd === "shot" || cmd === "") { await disposeAll(els); continue; }
+
+      // Recovery commands — not recorded into the flow, just re-capture.
+      if (cmd === "reload") {
+        console.log("  · reloading…");
+        await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 }).catch((e) => console.log(`  ⚠️  reload: ${e instanceof Error ? e.message : e}`));
+        await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {});
+        await disposeAll(els);
+        continue;
+      }
+      if (cmd === "relogin") {
+        try {
+          await login(page, account, (m) => console.log(`  · ${m}`));
+          await saveSession(context, sessionPath).catch(() => {});
+          console.log("  · session saved");
+        } catch (e) { console.log(`  ⚠️  relogin failed: ${e instanceof Error ? e.message : String(e)}`); }
+        await disposeAll(els);
+        continue;
+      }
+      if (cmd === "tabs") {
+        context.pages().filter((p) => !p.isClosed()).forEach((p, i) => console.log(`  [tab ${i}] ${p === page ? "* " : "  "}${p.url()}`));
+        await disposeAll(els);
+        continue;
+      }
+      if (cmd === "switchtab") {
+        const open = context.pages().filter((p) => !p.isClosed());
+        const n = Number(rest[0]);
+        page = (Number.isInteger(n) && open[n]) ? open[n] : (open[open.length - 1] ?? page);
+        await page.bringToFront().catch(() => {});
+        console.log(`  · switched to ${page.url()}`);
+        await disposeAll(els);
+        continue;
+      }
+      if (cmd === "closetab") {
+        if (context.pages().filter((p) => !p.isClosed()).length > 1) {
+          await page.close().catch(() => {});
+          page = newestPage(context) ?? page;
+          await page.bringToFront().catch(() => {});
+          console.log(`  · closed tab, now on ${page.url()}`);
+        } else { console.log("  · only one tab open — not closing"); }
+        await disposeAll(els);
+        continue;
+      }
 
       if (cmd === "abort") {
         await recordStep({ sessionId, idx, pageUrl: page.url(), pageTitle: title, screenshotPath: path, elements: metaOf(els), action: null, status: "captured" });
@@ -128,6 +252,25 @@ function printScreen(idx: number, page: Page, title: string, signedUrl: string |
   console.log(`(type 'help' for commands)`);
 }
 
+// Find the N-th element (0-based, top-to-bottom then left-to-right) whose text
+// contains `needle`, using the live Playwright handles — which pierce shadow DOM
+// (Turnitin's Feedback Studio renders the submission list inside web components,
+// invisible to an in-page querySelectorAll).
+// The most recently opened, still-open tab in the context.
+function newestPage(context: import("playwright").BrowserContext): Page | undefined {
+  const open = context.pages().filter((p) => !p.isClosed());
+  return open[open.length - 1];
+}
+
+async function nthMatching(els: DetectedElement[], needle: string, n: number): Promise<DetectedElement | null> {
+  const nd = needle.toLowerCase();
+  const cands = els.filter((e) => e.text.toLowerCase().includes(nd));
+  if (!cands.length || n < 0) return null;
+  const boxed = await Promise.all(cands.map(async (e) => ({ e, box: await e.handle.boundingBox().catch(() => null) })));
+  boxed.sort((a, b) => (a.box?.y ?? 0) - (b.box?.y ?? 0) || (a.box?.x ?? 0) - (b.box?.x ?? 0));
+  return n < boxed.length ? boxed[n].e : null;
+}
+
 async function execute(
   page: Page, els: DetectedElement[], cmd: string, rest: string[],
 ): Promise<{ action: FlowAction | null; error?: string }> {
@@ -143,6 +286,127 @@ async function execute(
         if (!el) return { action: null, error: `no element #${rest[0]}` };
         await el.handle.click({ timeout: 15_000 });
         return { action: { type: "click", selector: el.selector, frame: el.frame, text: el.text } };
+      }
+      case "clickclass":
+      case "clickassign": {
+        const el = pick(rest[0]);
+        if (!el) return { action: null, error: `no element #${rest[0]}` };
+        await el.handle.click({ timeout: 15_000 });
+        // Click concretely while teaching, but record a dynamic placeholder so
+        // replay clicks whatever class/assignment the admin configured.
+        const value = cmd === "clickclass" ? "<<CLASS_LABEL>>" : "<<ASSIGNMENT_LABEL>>";
+        return { action: { type: "clicktext", value, frame: el.frame, text: el.text } };
+      }
+      case "clicktext": {
+        const text = rest.join(" ");
+        if (!text) return { action: null, error: "clicktext needs some text" };
+        const needle = text.toLowerCase();
+        const el = els.find((e) => e.text.toLowerCase() === needle)
+          ?? els.find((e) => e.text.toLowerCase().includes(needle));
+        if (el) {
+          await hardClick(page, el.handle);
+          return { action: { type: "clicktext", value: text, selector: el.selector, frame: el.frame, text: el.text } };
+        }
+        // Fall back to Playwright's text engine for non-standard elements (menu <div>s).
+        const r = await clickByText(page, text);
+        if (r.status === "ok") return { action: { type: "clicktext", value: text, frame: r.frame, text } };
+        return { action: null, error: `no visible element with text "${text}"` };
+      }
+      case "clickif": {
+        // Optional click: click if present, otherwise skip without failing.
+        // Used for the Resubmit "Confirm" dialog, which is absent on the Submit path.
+        const text = rest.join(" ");
+        if (!text) return { action: null, error: "clickif needs some text" };
+        const needle = text.toLowerCase();
+        const el = els.find((e) => e.text.toLowerCase() === needle)
+          ?? els.find((e) => e.text.toLowerCase().includes(needle));
+        let clicked = false;
+        if (el) { await hardClick(page, el.handle); clicked = true; }
+        else { clicked = (await clickByText(page, text)).status === "ok"; }
+        console.log(`  · clickif "${text}": ${clicked ? "clicked" : "not present — skipped"}`);
+        return { action: { type: "clickif", value: text, text } };
+      }
+      case "clickbtn": {
+        // Hard mouse click on a real <button> by name, waiting until it's enabled.
+        const name = rest.join(" ");
+        if (!name) return { action: null, error: "usage: clickbtn <button name>  (e.g. clickbtn Submit)" };
+        const r = await clickButtonByName(page, name);
+        if (r.status !== "ok") return { action: null, error: `button "${name}" ${r.status}` };
+        return { action: { type: "clickbtn", value: name, frame: r.frame, text: name } };
+      }
+      case "attach": {
+        const file = rest[0] || SAMPLE_FILE;
+        const r = await setFileInput(page, file);
+        if (!r.ok) return { action: null, error: "no <input type=file> found on this screen" };
+        // Replay substitutes the real job document for this placeholder.
+        return { action: { type: "upload", value: "<<JOB_FILE>>", frame: r.frame, text: `attach ${file}` } };
+      }
+      case "clickany": {
+        // clickany A | B | C  → click the first option present (most specific first)
+        const alts = rest.join(" ").split("|").map((s) => s.trim()).filter(Boolean);
+        if (!alts.length) return { action: null, error: "usage: clickany <a> | <b> ...  (e.g. clickany Resubmit | Submit)" };
+        for (const alt of alts) {
+          const needle = alt.toLowerCase();
+          const el = els.find((e) => e.text.toLowerCase() === needle)
+            ?? els.find((e) => e.text.toLowerCase().includes(needle));
+          if (el) {
+            await hardClick(page, el.handle);
+            return { action: { type: "clickany", value: alts.join(" | "), frame: el.frame, text: el.text } };
+          }
+          const r = await clickByText(page, alt);
+          if (r.status === "ok") return { action: { type: "clickany", value: alts.join(" | "), frame: r.frame, text: alt } };
+        }
+        return { action: null, error: `none of [${alts.join(", ")}] found on screen` };
+      }
+      case "viewassign": {
+        const name = rest.join(" ");
+        if (!name) return { action: null, error: "viewassign needs the assignment name, e.g. viewassign Research" };
+        const r = await clickInRow(page, name, "View");
+        if (r.status !== "ok") return { action: null, error: `could not click View for "${name}" (${r.status})` };
+        // Click concretely now; record dynamically so replay uses the configured assignment.
+        return { action: { type: "clickrow", value: "<<ASSIGNMENT_LABEL>>", actionText: "View", frame: r.frame, text: name } };
+      }
+      case "rowclick": {
+        // rowclick <action> | <row text...>
+        const raw = rest.join(" ");
+        const [actionText, rowText] = raw.split("|").map((s) => s.trim());
+        if (!actionText || !rowText) return { action: null, error: 'usage: rowclick <action> | <row text>  (e.g. rowclick View | Research)' };
+        const r = await clickInRow(page, rowText, actionText);
+        if (r.status !== "ok") return { action: null, error: `could not click "${actionText}" in row "${rowText}" (${r.status})` };
+        return { action: { type: "clickrow", value: rowText, actionText, frame: r.frame, text: rowText } };
+      }
+      case "menulane": {
+        const i = Number(rest[0]);
+        if (!Number.isInteger(i) || i < 0) return { action: null, error: "usage: menulane <i>  (0 = first lane)" };
+        const needle = "Display actions menu";
+        const el = await nthMatching(els, needle, i);
+        if (!el) {
+          const found = els.filter((e) => e.text.toLowerCase().includes(needle.toLowerCase())).length;
+          return { action: null, error: `lane #${i} 3-dots not found (matched ${found} "${needle}" buttons)` };
+        }
+        await hardClick(page, el.handle);
+        // Record dynamically: replay clicks the lane assigned to this worker.
+        return { action: { type: "clicknth", value: "<<LANE_INDEX>>", actionText: needle, frame: el.frame, text: `lane ${i} actions menu` } };
+      }
+      case "laneclick": {
+        // laneclick <i> <needle> → hard-click the i-th match of <needle>, recorded
+        // as the worker's lane (<<LANE_INDEX>>). e.g. laneclick 0 Similarity:
+        const i = Number(rest[0]);
+        const needle = rest.slice(1).join(" ");
+        if (!Number.isInteger(i) || i < 0 || !needle) return { action: null, error: "usage: laneclick <i> <needle...>" };
+        const el = await nthMatching(els, needle, i);
+        if (!el) return { action: null, error: `lane #${i} match for "${needle}" not found` };
+        await hardClick(page, el.handle);
+        return { action: { type: "clicknth", value: "<<LANE_INDEX>>", actionText: needle, frame: el.frame, text: `lane ${i} ${needle}` } };
+      }
+      case "clicknth": {
+        const i = Number(rest[0]);
+        const needle = rest.slice(1).join(" ");
+        if (!Number.isInteger(i) || i < 0 || !needle) return { action: null, error: "usage: clicknth <i> <needle...>" };
+        const el = await nthMatching(els, needle, i);
+        if (!el) return { action: null, error: `match #${i} for "${needle}" not found` };
+        await hardClick(page, el.handle);
+        return { action: { type: "clicknth", value: String(i), actionText: needle, frame: el.frame, text: needle } };
       }
       case "fill": {
         const el = pick(rest[0]);
