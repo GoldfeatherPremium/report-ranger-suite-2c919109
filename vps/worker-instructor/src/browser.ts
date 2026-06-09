@@ -356,3 +356,58 @@ export async function clickInRow(
 export async function disposeAll(els: DetectedElement[]): Promise<void> {
   await Promise.all(els.map((e) => e.handle.dispose().catch(() => {})));
 }
+
+// ── Replay helpers (used by the RUN engine) ──────────────────────────────────
+
+// Hard-click the n-th element (top→bottom, left→right) whose text contains
+// `needle`. Mirrors the teach-mode lane click, but extracts fresh each call.
+export async function clickNthByText(page: Page, needle: string, n: number): Promise<boolean> {
+  const els = await extractElements(page);
+  try {
+    const nd = needle.toLowerCase();
+    const boxed = await Promise.all(
+      els.filter((e) => e.text.toLowerCase().includes(nd))
+        .map(async (e) => ({ e, box: await e.handle.boundingBox().catch(() => null) })),
+    );
+    boxed.sort((a, b) => (a.box?.y ?? 0) - (b.box?.y ?? 0) || (a.box?.x ?? 0) - (b.box?.x ?? 0));
+    if (n < 0 || n >= boxed.length) return false;
+    await hardClick(page, boxed[n].e.handle);
+    return true;
+  } finally { await disposeAll(els); }
+}
+
+// The text of the n-th element matching `needle` (e.g. the lane's "Similarity:" cell).
+export async function readNthText(page: Page, needle: string, n: number): Promise<string | null> {
+  const els = await extractElements(page);
+  try {
+    const nd = needle.toLowerCase();
+    const boxed = await Promise.all(
+      els.filter((e) => e.text.toLowerCase().includes(nd))
+        .map(async (e) => ({ e, box: await e.handle.boundingBox().catch(() => null) })),
+    );
+    boxed.sort((a, b) => (a.box?.y ?? 0) - (b.box?.y ?? 0) || (a.box?.x ?? 0) - (b.box?.x ?? 0));
+    return (n >= 0 && n < boxed.length) ? boxed[n].e.text : null;
+  } finally { await disposeAll(els); }
+}
+
+// Read the lane's Similarity and AI Writing scores from the submissions list.
+// Returns the parsed values, or null for a score that hasn't arrived yet.
+// Similarity: a number 0–100. AI: "0", "*", or a number 20–100 (arrived); null = "--"/processing.
+export async function readLaneScores(page: Page, lane: number): Promise<{ sim: string | null; ai: string | null }> {
+  const simText = await readNthText(page, "Similarity:", lane);
+  const aiText = await readNthText(page, "AI Writing:", lane);
+  const sim = simText?.match(/similarity:\s*(\d{1,3})\s*%/i)?.[1] ?? null;
+  const ai = aiText?.match(/ai writing:\s*(\*|\d{1,3})\s*%/i)?.[1] ?? null;
+  return { sim, ai };
+}
+
+// Click the first present of several texts (e.g. ["Resubmit", "Submit"]).
+export async function clickAnyText(page: Page, alts: string[]): Promise<boolean> {
+  for (const t of alts) if ((await clickByText(page, t)).status === "ok") return true;
+  return false;
+}
+
+// Click `text` if it's present; returns whether it clicked. Never throws.
+export async function clickIfText(page: Page, text: string): Promise<boolean> {
+  return (await clickByText(page, text).catch(() => ({ status: "err" as const }))).status === "ok";
+}

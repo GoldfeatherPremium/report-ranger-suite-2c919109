@@ -186,3 +186,144 @@ export async function log(workerId: string, level: "info" | "warn" | "error", me
   });
   console.log(`[${level}] ${message}`);
 }
+
+// ── RUN / replay mode ────────────────────────────────────────────────────────
+export type Job = {
+  id: string;
+  user_id: string;
+  original_name: string;
+  source_path: string;
+  attempts: number;
+  max_attempts: number;
+  instructor_assignment_id: string | null;
+  instructor_lane: number | null;
+  turnitin_submission_id: string | null;
+  ai_report_status: string | null;
+};
+
+export type AssignmentInfo = {
+  assignment_id: string;
+  assignment_label: string;
+  class_label: string;
+  account: { id: string; label: string; email: string; login_url: string; password: string };
+};
+
+export async function logJob(workerId: string, jobId: string | null, level: "info" | "warn" | "error", message: string) {
+  await supabase.from("worker_logs").insert({ worker_id: workerId, job_id: jobId, level, message, metadata: null as never });
+  console.log(`[${level}] ${message}`);
+}
+
+export async function claimNextInstructorJob(workerId: string): Promise<Job | null> {
+  const { data, error } = await supabase.rpc("claim_next_instructor_job", { p_worker_id: workerId });
+  if (error) throw error;
+  const row = (Array.isArray(data) ? data[0] : data) as Job | null | undefined;
+  return row && row.id ? row : null;
+}
+
+export async function ownsLane(jobId: string): Promise<boolean> {
+  const { data, error } = await supabase.rpc("instructor_job_owns_lane", { p_job_id: jobId });
+  if (error) throw error;
+  return data === true;
+}
+
+export async function getAssignmentInfo(assignmentId: string): Promise<AssignmentInfo> {
+  const { data: a, error } = await supabase
+    .from("turnitin_instructor_assignments")
+    .select("id,label,class_id, turnitin_instructor_classes(id,label,account_id, turnitin_instructor_accounts(id,label,email,login_url))")
+    .eq("id", assignmentId)
+    .single();
+  if (error) throw error;
+
+  type Raw = {
+    id: string; label: string;
+    turnitin_instructor_classes: {
+      id: string; label: string; account_id: string;
+      turnitin_instructor_accounts: { id: string; label: string; email: string; login_url: string };
+    };
+  };
+  const r = a as unknown as Raw;
+  const acc = r.turnitin_instructor_classes.turnitin_instructor_accounts;
+  const { data: pwd, error: pErr } = await supabase.rpc("decrypt_instructor_account_password", { account: acc.id });
+  if (pErr) throw pErr;
+
+  return {
+    assignment_id: r.id,
+    assignment_label: r.label,
+    class_label: r.turnitin_instructor_classes.label,
+    account: { id: acc.id, label: acc.label, email: acc.email, login_url: acc.login_url, password: pwd as unknown as string },
+  };
+}
+
+export async function downloadSource(sourcePath: string): Promise<Buffer> {
+  const { data, error } = await supabase.storage.from("documents").download(sourcePath);
+  if (error || !data) throw error ?? new Error("source download failed");
+  return Buffer.from(await data.arrayBuffer());
+}
+
+export async function uploadReport(
+  userId: string, jobId: string, pdf: Buffer, kind: "similarity" | "ai",
+): Promise<void> {
+  const path = `${userId}/${jobId}.${kind}.pdf`;
+  const { error } = await supabase.storage.from("reports").upload(path, pdf, {
+    contentType: "application/pdf", upsert: true,
+  });
+  if (error) throw error;
+  const { error: ins } = await supabase.from("reports").upsert({
+    job_id: jobId, storage_path: path, file_name: `${jobId}.${kind}.pdf`,
+    mime_type: "application/pdf", size_bytes: pdf.length, kind,
+  }, { onConflict: "job_id,kind" });
+  if (ins) throw ins;
+}
+
+export async function setAiReportStatus(jobId: string, status: "pending" | "ready" | "failed") {
+  await supabase.from("jobs").update({ ai_report_status: status }).eq("id", jobId);
+}
+
+export async function markJobSubmitted(jobId: string, submissionId: string) {
+  await supabase.from("jobs").update({
+    turnitin_submission_id: submissionId, last_polled_at: new Date().toISOString(),
+  }).eq("id", jobId);
+}
+
+export async function touchJob(jobId: string) {
+  await supabase.from("jobs").update({ last_polled_at: new Date().toISOString() }).eq("id", jobId);
+}
+
+export async function markJobDone(jobId: string, submissionId: string | null, similarityPercent?: number | null) {
+  await supabase.from("jobs").update({
+    status: "completed", finished_at: new Date().toISOString(),
+    turnitin_submission_id: submissionId, last_polled_at: new Date().toISOString(),
+    ...(similarityPercent != null ? { similarity_percent: similarityPercent } : {}),
+  }).eq("id", jobId);
+  await supabase.from("turnitin_instructor_slot_usage")
+    .update({ freed_at: new Date().toISOString(), turnitin_submission_id: submissionId })
+    .eq("job_id", jobId).is("freed_at", null);
+  await supabase.rpc("enqueue_job_callback", { p_job_id: jobId, p_event: "job.completed" });
+}
+
+export async function markJobFailed(jobId: string, attempts: number, max: number, error: string) {
+  if (attempts >= max) {
+    await supabase.from("jobs").update({
+      status: "failed", finished_at: new Date().toISOString(), error, ai_report_status: "failed",
+    }).eq("id", jobId);
+    await supabase.rpc("enqueue_job_callback", { p_job_id: jobId, p_event: "job.failed" });
+  } else {
+    await supabase.from("jobs").update({
+      status: "queued", error, instructor_assignment_id: null, instructor_lane: null,
+      worker_id: null, queued_at: new Date().toISOString(),
+    }).eq("id", jobId);
+  }
+  await supabase.from("turnitin_instructor_slot_usage")
+    .update({ freed_at: new Date().toISOString() })
+    .eq("job_id", jobId).is("freed_at", null);
+}
+
+export async function requeueJob(jobId: string, reason: string) {
+  await supabase.from("turnitin_instructor_slot_usage")
+    .update({ freed_at: new Date().toISOString() })
+    .eq("job_id", jobId).is("freed_at", null);
+  await supabase.from("jobs").update({
+    status: "queued", error: reason, instructor_assignment_id: null, instructor_lane: null,
+    worker_id: null, queued_at: new Date().toISOString(),
+  }).eq("id", jobId);
+}
