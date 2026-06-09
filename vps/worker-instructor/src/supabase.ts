@@ -120,6 +120,16 @@ export async function uploadScreenshot(sessionId: string, idx: number, png: Buff
   return { path, signedUrl: data?.signedUrl ?? null };
 }
 
+// Uploads a captured download (e.g. a report PDF) to the training bucket so the
+// operator can verify the real file, returning a signed URL.
+export async function uploadDownload(sessionId: string, filename: string, buf: Buffer): Promise<string | null> {
+  const path = `downloads/${sessionId}/${filename}`;
+  const { error } = await supabase.storage.from("training").upload(path, buf, { upsert: true });
+  if (error) { console.error("download upload:", error.message); return null; }
+  const { data } = await supabase.storage.from("training").createSignedUrl(path, 60 * 60 * 24 * 7);
+  return data?.signedUrl ?? null;
+}
+
 export async function recordStep(args: {
   sessionId: string; idx: number; pageUrl: string; pageTitle: string;
   screenshotPath: string; elements: ElementMeta[]; action: FlowAction | null;

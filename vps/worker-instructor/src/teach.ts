@@ -2,11 +2,12 @@ import "./load-env.js";
 import * as readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { existsSync, mkdirSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { dirname, resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   getInstructorAccount, createSession, finishSession, uploadScreenshot,
-  recordStep, saveFlow, log, type FlowAction,
+  recordStep, saveFlow, log, uploadDownload, type FlowAction,
 } from "./supabase.js";
 import {
   launch, login, screenshot, extractElements, metaOf, disposeAll, clickInRow, clickByText, hardClick,
@@ -79,6 +80,21 @@ async function main() {
   let page = launched.page; // mutable: follows new tabs (report viewer opens in one)
   const sessionId = await createSession(account.id, WORKER_ID, `teach ${account.label}`);
   await log(WORKER_ID, "info", `teaching session ${sessionId} for ${account.label}`);
+
+  // Capture every download (report PDFs) so we can confirm the real file and
+  // verify it via a link — works no matter which tab/click triggers it.
+  context.on("download", (download) => {
+    void (async () => {
+      try {
+        const fname = download.suggestedFilename() || `download-${Date.now()}`;
+        const p = await download.path();
+        if (!p) { console.log(`  ⚠️  download "${fname}" produced no file`); return; }
+        const buf = await readFile(p);
+        const url = await uploadDownload(sessionId, `${Date.now()}-${fname}`, buf);
+        console.log(`  ⬇️  DOWNLOADED ${fname} — ${(buf.length / 1024).toFixed(0)} KB${url ? `\n      verify: ${url}` : ""}`);
+      } catch (e) { console.log(`  ⚠️  download capture failed: ${e instanceof Error ? e.message : e}`); }
+    })();
+  });
 
   // Reuse a saved session only if it's REALLY still logged in; otherwise log in
   // live with the configured credentials and save a fresh session.
