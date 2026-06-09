@@ -10,7 +10,7 @@ import {
 } from "./supabase.js";
 import {
   launch, login, screenshot, extractElements, metaOf, disposeAll, clickInRow,
-  isLoginFormPresent, saveSession, homeUrlFor, type DetectedElement,
+  isLoggedIn, saveSession, homeUrlFor, type DetectedElement,
 } from "./browser.js";
 import type { Page } from "playwright";
 
@@ -25,6 +25,8 @@ const WORKER_ID = process.env.WORKER_ID ?? `instructor-teach-${process.pid}`;
 const HEADLESS = (process.env.HEADLESS ?? "true") === "true";
 const SAMPLE_FILE = process.env.TEACH_SAMPLE_FILE ?? "./sample.docx";
 const ACCOUNT_LABEL = process.env.TEACH_ACCOUNT_LABEL;
+// Set TEACH_FRESH=1 to ignore any saved session and always log in live.
+const FRESH = /^(1|true|yes)$/i.test(process.env.TEACH_FRESH ?? "");
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -62,30 +64,36 @@ async function main() {
   console.log(`headless: ${HEADLESS}\n`);
 
   const sessionPath = sessionFile(account.id);
-  const haveSession = existsSync(sessionPath);
+  const haveSession = existsSync(sessionPath) && !FRESH;
   const { browser, context, page } = await launch(HEADLESS, haveSession ? sessionPath : undefined);
   const sessionId = await createSession(account.id, WORKER_ID, `teach ${account.label}`);
   await log(WORKER_ID, "info", `teaching session ${sessionId} for ${account.label}`);
 
-  // Reuse a saved session if it's still valid; otherwise log in fresh and save it.
+  // Reuse a saved session only if it's REALLY still logged in; otherwise log in
+  // live with the configured credentials and save a fresh session.
   let loggedIn = false;
   if (haveSession) {
     try {
       await page.goto(homeUrlFor(account.login_url), { waitUntil: "domcontentloaded", timeout: 60_000 });
       await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {});
-      loggedIn = !(await isLoginFormPresent(page));
-      console.log(loggedIn ? "  · reused saved session — login skipped" : "  · saved session expired — logging in");
+      loggedIn = await isLoggedIn(page);
+      console.log(loggedIn ? "  · reused saved session — login skipped" : "  · saved session expired — logging in live");
     } catch { /* fall through to a fresh login */ }
+  } else if (FRESH) {
+    console.log("  · TEACH_FRESH set — ignoring any saved session, logging in live");
   }
   if (!loggedIn) {
-    try { await login(page, account, (m) => console.log(`  · ${m}`)); loggedIn = true; }
-    catch (e) {
+    try {
+      await login(page, account, (m) => console.log(`  · ${m}`));
+      loggedIn = await isLoggedIn(page);
+      if (!loggedIn) console.warn("  ⚠️  login submitted but no logged-in marker found — check the screen / credentials (try 'relogin').");
+    } catch (e) {
       console.error(`login failed: ${e instanceof Error ? e.message : String(e)}`);
       console.error("Continuing anyway — use 'relogin' or 'goto'.");
     }
   }
   if (loggedIn) {
-    try { await saveSession(context, sessionPath); console.log("  · session saved (login will be skipped next time)"); }
+    try { await saveSession(context, sessionPath); console.log("  · session saved (login will be skipped next time while valid)"); }
     catch (e) { console.log(`  ⚠️  could not save session: ${e instanceof Error ? e.message : e}`); }
   }
 

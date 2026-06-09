@@ -48,6 +48,20 @@ export async function isLoginFormPresent(page: Page): Promise<boolean> {
   return (await locateInAnyFrame(page, LOGIN.email)) != null;
 }
 
+// True if we are POSITIVELY logged in (a "Logout" control is present). This is
+// more reliable than "no login form": an expired session can land on a page
+// that has neither a login form nor real content, which the negative check
+// would wrongly treat as logged in.
+export async function isLoggedIn(page: Page): Promise<boolean> {
+  for (const frame of page.frames()) {
+    try {
+      const el = await frame.$('a:has-text("Logout"), button:has-text("Logout"), a[href*="logout"]');
+      if (el && await el.isVisible().catch(() => false)) return true;
+    } catch { /* frame detached / cross-origin timing */ }
+  }
+  return false;
+}
+
 // Persist cookies/localStorage so the next run can skip login.
 export async function saveSession(context: BrowserContext, path: string): Promise<void> {
   await context.storageState({ path });
