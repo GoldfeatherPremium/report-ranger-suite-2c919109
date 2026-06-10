@@ -979,6 +979,7 @@ export type Database = {
         Args: { p_event: string; p_job_id: string }
         Returns: undefined
       }
+      fail_stuck_jobs: { Args: { p_max_age_minutes?: number }; Returns: number }
       instructor_job_owns_lane: { Args: { p_job_id: string }; Returns: boolean }
       is_admin: { Args: never; Returns: boolean }
       reassign_instructor_job_assignment: {
