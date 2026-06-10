@@ -994,6 +994,17 @@ export type Database = {
         Returns: number
       }
       retry_job: { Args: { p_job_id: string }; Returns: undefined }
+      update_instructor_account: {
+        Args: {
+          p_email: string
+          p_id: string
+          p_label: string
+          p_login_url: string
+          p_notes: string
+          p_password: string
+        }
+        Returns: undefined
+      }
     }
     Enums: {
       job_state:
