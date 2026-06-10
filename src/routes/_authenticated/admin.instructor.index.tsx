@@ -169,7 +169,7 @@ function DeleteAccountButton({ account, onDeleted }: { account: Account; onDelet
             This permanently removes the instructor account ({account.email}) and all of its classes and assignments. Jobs that already submitted under this account will lose their references. This cannot be undone.
           </AlertDialogDescription>
         </AlertDialogHeader>
-        <AlertFooter>
+        <AlertDialogFooter>
           <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
           <AlertDialogAction onClick={(e) => { e.preventDefault(); handleDelete(); }} disabled={deleting} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
             {deleting ? "Deleting…" : "Delete"}
