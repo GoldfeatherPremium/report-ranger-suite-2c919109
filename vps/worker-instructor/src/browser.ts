@@ -393,17 +393,95 @@ export async function readNthText(page: Page, needle: string, n: number): Promis
 // Read the lane's Similarity and AI Writing scores from the submissions list.
 // Returns the parsed values, or null for a score that hasn't arrived yet.
 // Similarity: a number 0–100. AI: "0", "*", or a number 20–100 (arrived); null = "--"/processing.
-// aiTerminal: true when the AI cell shows a non-processing, non-score icon (e.g. "excluded",
-// "not available", error icon) — AI will never arrive for this submission, stop waiting.
-export async function readLaneScores(page: Page, lane: number): Promise<{ sim: string | null; ai: string | null; aiTerminal: boolean }> {
+export async function readLaneScores(page: Page, lane: number): Promise<{ sim: string | null; ai: string | null }> {
   const simText = await readNthText(page, "Similarity:", lane);
   const aiText = await readNthText(page, "AI Writing:", lane);
   const sim = simText?.match(/similarity:\s*(\d{1,3})\s*%/i)?.[1] ?? null;
   const ai = aiText?.match(/ai writing:\s*(\*|\d{1,3})\s*%/i)?.[1] ?? null;
-  // Still processing: cell absent, empty, or shows the "--" placeholder spinner.
-  // Anything else (icon text, "N/A", "Excluded", etc.) is a terminal non-score state.
-  const aiIsProcessing = !aiText || aiText.includes("--");
-  return { sim, ai, aiTerminal: !ai && !aiIsProcessing };
+  return { sim, ai };
+}
+
+// ── Identity-based row matching ──────────────────────────────────────────────
+// Turnitin's submission cells carry the document title in their accessible name
+// (e.g. "Similarity: 64%. View submission for X titled <TITLE>"). Since the list
+// re-sorts after a submit, we locate the worker's OWN row by the unique title it
+// uploaded (the filename contains the job id) instead of by lane position.
+
+// Read the Similarity + AI scores for the row whose title contains `titleNeedle`.
+// aiTerminal: true when the AI cell has content other than the "--" processing
+// placeholder, meaning AI detection is not available for this document (e.g.
+// excluded, unsupported language, error icon) — stop waiting, don't expect a score.
+export async function readScoresForTitle(page: Page, titleNeedle: string): Promise<{ sim: string | null; ai: string | null; aiTerminal: boolean }> {
+  const els = await extractElements(page);
+  try {
+    const t = titleNeedle.toLowerCase();
+    const simEl = els.find((e) => { const x = e.text.toLowerCase(); return x.includes("similarity:") && x.includes(t); });
+    const aiEl = els.find((e) => { const x = e.text.toLowerCase(); return x.includes("ai writing:") && x.includes(t); });
+    const ai = aiEl?.text.match(/ai writing:\s*(\*|\d{1,3})\s*%/i)?.[1] ?? null;
+    const aiIsProcessing = !aiEl || aiEl.text.includes("--");
+    return {
+      sim: simEl?.text.match(/similarity:\s*(\d{1,3})\s*%/i)?.[1] ?? null,
+      ai,
+      aiTerminal: !ai && !aiIsProcessing,
+    };
+  } finally { await disposeAll(els); }
+}
+
+// Hard-click the Similarity cell of the row whose title contains `titleNeedle`.
+export async function clickSimilarityForTitle(page: Page, titleNeedle: string): Promise<boolean> {
+  const els = await extractElements(page);
+  try {
+    const t = titleNeedle.toLowerCase();
+    const el = els.find((e) => { const x = e.text.toLowerCase(); return x.includes("similarity:") && x.includes(t); });
+    if (!el) return false;
+    await hardClick(page, el.handle);
+    return true;
+  } finally { await disposeAll(els); }
+}
+
+// Wait until the worker's own row (title contains `titleNeedle`) is visible.
+export async function waitForTitleRow(page: Page, titleNeedle: string, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  const t = titleNeedle.toLowerCase();
+  while (Date.now() < deadline) {
+    const els = await extractElements(page);
+    const found = els.some((e) => e.text.toLowerCase().includes(t));
+    await disposeAll(els);
+    if (found) return true;
+    await page.waitForTimeout(1500);
+  }
+  return false;
+}
+
+// Poll until at least `minCount` elements contain `needle` (i.e. the list/rows
+// have rendered), returning the count, or -1 on timeout. Lets replay wait for a
+// slow Feedback Studio table instead of racing it with a fixed sleep.
+export async function waitForCountByText(page: Page, needle: string, minCount: number, timeoutMs: number): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  const nd = needle.toLowerCase();
+  while (Date.now() < deadline) {
+    const els = await extractElements(page);
+    const c = els.filter((e) => e.text.toLowerCase().includes(nd)).length;
+    await disposeAll(els);
+    if (c >= minCount) return c;
+    await page.waitForTimeout(1500);
+  }
+  return -1;
+}
+
+// Wait until some visible element contains `needle` (any frame), up to timeoutMs.
+export async function waitForText(page: Page, needle: string, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    for (const frame of page.frames()) {
+      try {
+        const loc = frame.getByText(needle, { exact: false }).filter({ visible: true }).first();
+        if ((await loc.count()) > 0) return true;
+      } catch { /* frame busy */ }
+    }
+    await page.waitForTimeout(1000);
+  }
+  return false;
 }
 
 // Click the first present of several texts (e.g. ["Resubmit", "Submit"]).
