@@ -58,10 +58,21 @@ export async function processJob(
     await markJobSubmitted(job.id, `instructor:${assignment.assignment_id}:lane${lane}`);
     await log("info", "submitted — cooldown 60s, then poll for scores");
 
-    // 4. Cooldown + poll until both scores or 20 min from submit
+    // 4. Cooldown, then navigate back to the submission list and poll.
+    // After submission Turnitin may redirect to a confirmation page — page.reload()
+    // there would keep refreshing the confirmation rather than the submission list.
+    // Navigate home→class→assignment once, then use browser F5 (page.reload()) each poll.
     await sleep(COOLDOWN_MS);
+    await page.goto(homeUrlFor(assignment.account.login_url), { waitUntil: "domcontentloaded", timeout: 60_000 });
+    await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {});
+    await touchJob(job.id);
+    if ((await clickByText(page, assignment.class_label)).status !== "ok") throw new Error(`class "${assignment.class_label}" not found (post-submit nav)`);
+    await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => {});
+    if ((await clickInRow(page, assignment.assignment_label, "View")).status !== "ok") throw new Error(`assignment "${assignment.assignment_label}" View not found (post-submit nav)`);
+    await sleep(NAV_WAIT_MS);
     let sim: string | null = null;
     let ai: string | null = null;
+    let aiTerminal = false;
     while (Date.now() - submittedAt < AI_TOTAL_TIMEOUT_MS) {
       await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 }).catch(() => {});
       await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {});
@@ -69,9 +80,10 @@ export async function processJob(
       const s = await readLaneScores(page, lane);
       if (s.sim) sim = s.sim;
       if (s.ai) ai = s.ai;
+      if (s.aiTerminal) aiTerminal = true;
       await touchJob(job.id);
-      await log("info", `poll lane ${lane}: similarity=${sim ?? "--"} ai=${ai ?? "--"}`);
-      if (sim && ai) break;
+      await log("info", `poll lane ${lane}: similarity=${sim ?? "--"} ai=${ai ?? (aiTerminal ? "n/a" : "--")}`);
+      if (sim && (ai || aiTerminal)) break;
       await sleep(POLL_INTERVAL_MS);
     }
     if (!sim) throw new Error("Similarity score did not arrive within 20 min");
@@ -109,7 +121,10 @@ export async function processJob(
       }
     } else {
       await setAiReportStatus(job.id, "failed");
-      await log("warn", "AI score did not arrive within 20 min — delivering Similarity only");
+      const reason = aiTerminal
+        ? "AI not available for this document (non-processing icon detected)"
+        : "AI score did not arrive within 20 min";
+      await log("warn", `${reason} — delivering Similarity only`);
     }
 
     await report.close().catch(() => {});
