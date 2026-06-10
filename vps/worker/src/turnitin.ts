@@ -900,6 +900,20 @@ async function downloadSimilarityPdf(
   // The viewer is a React SPA — wait for toolbar to fully render.
   await viewer.waitForTimeout(6_000);
 
+  // Dismiss the "Welcome / Take a quick tour" modal if it appears (<5% of loads).
+  const welcomeClose = [
+    'button[aria-label*="close" i]',
+    'button[aria-label*="dismiss" i]',
+    'button[title*="close" i]',
+    'button:has-text("×")',
+    '[class*="welcome"] button',
+    '[class*="tour"] button[class*="close" i]',
+  ].join(", ");
+  if (await tryClickInAnyFrame(viewer, welcomeClose, 3_000)) {
+    await onProgress("dismissed welcome/tour modal");
+    await viewer.waitForTimeout(800);
+  }
+
   // Move the mouse to the right panel area so any auto-hiding toolbar becomes
   // visible/active before we start looking for the download button.
   await viewer.mouse.move(1280, 450).catch(() => {});
