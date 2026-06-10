@@ -1,4 +1,4 @@
-import { writeFile, unlink, readFile } from "node:fs/promises";
+import { writeFile, readFile, rm, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { BrowserContext, Page } from "playwright";
@@ -26,9 +26,14 @@ export async function processJob(
 ): Promise<void> {
   const log = (level: "info" | "warn" | "error", m: string) => logJob(workerId, job.id, level, m);
   const page = await ctx.newPage();
-  const tmpFile = join(tmpdir(), `${job.id}-${job.original_name.replace(/[^\w.\-]+/g, "_")}`);
+  // Use a per-job subdirectory so the file's basename = original name (what Turnitin sees).
+  // Path separators are the only chars stripped to prevent traversal; everything else is kept.
+  const safeName = job.original_name.replace(/[/\\]/g, "_");
+  const tmpDir = join(tmpdir(), job.id);
+  const tmpFile = join(tmpDir, safeName);
 
   try {
+    await mkdir(tmpDir, { recursive: true });
     await writeFile(tmpFile, await downloadSource(job.source_path));
     await log("info", `start job ${job.id} (${job.original_name}) → "${assignment.class_label}" / "${assignment.assignment_label}" lane ${lane}`);
 
@@ -131,7 +136,7 @@ export async function processJob(
     await markJobDone(job.id, `instructor:${assignment.assignment_id}:lane${lane}`, sim ? Number(sim) : null);
     await log("info", "job completed");
   } finally {
-    await unlink(tmpFile).catch(() => {});
+    await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     await page.close().catch(() => {});
   }
 }
