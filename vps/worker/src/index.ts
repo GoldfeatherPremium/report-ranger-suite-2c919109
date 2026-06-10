@@ -68,7 +68,6 @@ async function processOne(): Promise<boolean> {
           pollIntervalMs: POLL_INTERVAL_MS,
           uploadTimeoutMs: UPLOAD_TIMEOUT_MS,
           existingSubmissionId: currentSubmissionId,
-          diagJobId: job.id,
           onProgress: async (m) => { await log(WORKER_ID, job.id, "info", m); await touchJob(job.id); },
           onSubmitted: async (sid) => {
             currentSubmissionId = sid;
