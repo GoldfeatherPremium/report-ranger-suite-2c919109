@@ -393,12 +393,15 @@ export async function readNthText(page: Page, needle: string, n: number): Promis
 // Read the lane's Similarity and AI Writing scores from the submissions list.
 // Returns the parsed values, or null for a score that hasn't arrived yet.
 // Similarity: a number 0–100. AI: "0", "*", or a number 20–100 (arrived); null = "--"/processing.
-export async function readLaneScores(page: Page, lane: number): Promise<{ sim: string | null; ai: string | null }> {
+// aiTerminal: true when the AI cell shows content other than the "--" processing placeholder,
+// meaning AI is in a final non-score state (excluded, unsupported, error) — stop waiting.
+export async function readLaneScores(page: Page, lane: number): Promise<{ sim: string | null; ai: string | null; aiTerminal: boolean }> {
   const simText = await readNthText(page, "Similarity:", lane);
   const aiText = await readNthText(page, "AI Writing:", lane);
   const sim = simText?.match(/similarity:\s*(\d{1,3})\s*%/i)?.[1] ?? null;
   const ai = aiText?.match(/ai writing:\s*(\*|\d{1,3})\s*%/i)?.[1] ?? null;
-  return { sim, ai };
+  const aiIsProcessing = !aiText || aiText.includes("--");
+  return { sim, ai, aiTerminal: !ai && !aiIsProcessing };
 }
 
 // ── Identity-based row matching ──────────────────────────────────────────────
