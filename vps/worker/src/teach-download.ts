@@ -182,19 +182,58 @@ async function main() {
     await activePage.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
     console.log(`Logged in. URL: ${activePage.url()}`);
 
-    // ── Navigate to dashboard ──────────────────────────────────────────────────
+    // Check login succeeded (no email field still present).
+    const stillOnLogin = await activePage.frames().reduce(async (acc, frame) => {
+      if (await acc) return true;
+      return !!(await frame.$(LOGIN_EMAIL).catch(() => null));
+    }, Promise.resolve(false));
+    if (stillOnLogin) {
+      const shotUrl = await snap(activePage, "login-failed");
+      console.error(`\n✗ Still on login page after submitting credentials.`);
+      console.error(`  Screenshot: ${shotUrl ?? "(upload failed)"}`);
+      console.error(`  Check the slot's email/password in the DB and try again.`);
+      process.exit(1);
+    }
+
+    // ── Navigate to assignment dashboard ──────────────────────────────────────
     if (slot.submit_url) {
-      console.log(`Navigating to dashboard: ${slot.submit_url}`);
+      console.log(`\nNavigating to assignment dashboard: ${slot.submit_url}`);
       await activePage.goto(slot.submit_url, { waitUntil: "domcontentloaded", timeout: 60_000 });
       await activePage.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => {});
       console.log(`Dashboard loaded. URL: ${activePage.url()}`);
+    } else {
+      console.warn("Warning: slot has no submit_url — staying on post-login page.");
+    }
+
+    // ── Wait for a similarity score to appear on the dashboard ─────────────────
+    // The slot should already have a submitted paper so there's a clickable %.
+    // We poll for up to 20 s; if nothing appears we show a screenshot and let
+    // the operator navigate manually before typing their first action.
+    console.log("\nWaiting for similarity score on dashboard (up to 20 s)…");
+    const SIM_SEL = [
+      '.or-link', '[data-similarity]', '.similarity-score',
+      'a[href*="viewer"]', 'a[href*="ev.turnitin"]',
+      'a:has-text("%")', 'div[class*="similarity" i]',
+    ].join(", ");
+    let simFound = false;
+    const simDeadline = Date.now() + 20_000;
+    while (Date.now() < simDeadline) {
+      for (const frame of activePage.frames()) {
+        const n = await frame.locator(SIM_SEL).count().catch(() => 0);
+        if (n > 0) { simFound = true; break; }
+      }
+      if (simFound) break;
+      await sleep(1_500);
     }
 
     // ── Initial screenshot ─────────────────────────────────────────────────────
-    console.log("\nTaking initial screenshot…");
+    console.log(simFound
+      ? "✓ Similarity score visible — dashboard ready for download teaching."
+      : "⚠ No similarity score found yet. Navigate manually then type your first action.");
     const initUrl = await snap(activePage, "initial");
-    console.log(`\n┌─── INITIAL STATE ───────────────────────────────────────────┐`);
+    console.log(`\n┌─── STARTING STATE ──────────────────────────────────────────┐`);
     console.log(`│ page  : ${activePage.url()}`);
+    console.log(`│ score : ${simFound ? "VISIBLE ✓" : "not found ✗"}`);
     console.log(`│ shot  : ${initUrl ?? "(upload failed)"}`);
     console.log(`└─────────────────────────────────────────────────────────────┘`);
 
