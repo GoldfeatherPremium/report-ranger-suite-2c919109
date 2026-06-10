@@ -3,6 +3,7 @@ import { writeFile, mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SlotInfo } from "./supabase.js";
+import { uploadDiag } from "./supabase.js";
 import { aiDetectPageState } from "./ai-resolver.js";
 import { findElementWithAI } from "./ai-helper.js";
 
@@ -12,6 +13,17 @@ import { findElementWithAI } from "./ai-helper.js";
 // restart is acceptable since Turnitin sessions last days to weeks.
 type StorageStateObj = Awaited<ReturnType<import("playwright").BrowserContext["storageState"]>>;
 const sessionCache = new Map<string, StorageStateObj>();
+
+// Capture a viewport screenshot. Returns an empty Buffer on any error so callers
+// can always upload (uploadDiag skips zero-length buffers).
+async function takeScreenshot(page: Page): Promise<Buffer> {
+  try {
+    await page.waitForLoadState("networkidle", { timeout: 3_000 }).catch(() => {});
+    return await page.screenshot({ fullPage: false, animations: "disabled", timeout: 15_000 });
+  } catch {
+    try { return await page.screenshot({ fullPage: false, timeout: 5_000 }); } catch { return Buffer.alloc(0); }
+  }
+}
 
 // Thrown when Turnitin explicitly refuses a resubmission on the current slot.
 // The worker catches this, frees the slot, and tries the next available one.
@@ -328,9 +340,23 @@ export async function submitToTurnitin(opts: {
    *  submission ID immediately (before the slow similarity-score wait). */
   onSubmitted?: (submissionId: string) => Promise<void>;
   onProgress: (msg: string) => Promise<void>;
+  /** Job id used to namespace diagnostic screenshots in the training bucket.
+   *  When omitted, screenshots are still taken but not uploaded. */
+  diagJobId?: string;
 }): Promise<SubmissionResult> {
   const { slot, fileBytes, originalName, headless, submissionTimeoutMs, pollIntervalMs, uploadTimeoutMs,
-          existingSubmissionId, onSubmitted, onProgress } = opts;
+          existingSubmissionId, onSubmitted, onProgress, diagJobId } = opts;
+
+  let diagSeq = 0;
+  /** Take a screenshot of `p`, upload it, and log the URL via onProgress. */
+  const diag = async (p: Page, label: string): Promise<void> => {
+    try {
+      const buf = await takeScreenshot(p);
+      const seq = String(++diagSeq).padStart(2, "0");
+      const url = diagJobId ? await uploadDiag(diagJobId, `${seq}-${label}`, buf) : null;
+      await onProgress(`[diag] ${label} page=${p.url().slice(0, 120)} shot=${url ?? "(no upload)"}`);
+    } catch { /* best-effort — never crash the job over a diag */ }
+  };
 
   const tmp = await mkdtemp(join(tmpdir(), "tii-"));
   const filePath = join(tmp, originalName);
@@ -445,7 +471,7 @@ export async function submitToTurnitin(opts: {
     if (existingSubmissionId) {
       await onProgress(`resuming score-wait (already submitted, id=${existingSubmissionId})`);
       const { submissionId, similarityPercent } = await waitForSimilarity(page, submissionTimeoutMs, pollIntervalMs, onProgress);
-      const pdf = await downloadSimilarityPdf(page, onProgress);
+      const pdf = await downloadSimilarityPdf(page, diag, onProgress);
       return { pdf, submissionId: submissionId ?? existingSubmissionId, similarityPercent };
     }
 
@@ -647,7 +673,7 @@ export async function submitToTurnitin(opts: {
 
     // ── Step 8: open viewer and download the PDF ───────────────────────────────
     await onProgress("downloading similarity PDF");
-    const pdf = await downloadSimilarityPdf(page, onProgress);
+    const pdf = await downloadSimilarityPdf(page, diag, onProgress);
 
     return { pdf, submissionId, similarityPercent };
   } finally {
@@ -867,6 +893,7 @@ async function waitForSimilarity(page: Page, timeoutMs: number, pollMs: number, 
 // ─────────────────────────────────────────────────────────────────────────────
 async function downloadSimilarityPdf(
   page: Page,
+  diag: (p: Page, label: string) => Promise<void>,
   onProgress: (m: string) => Promise<void>,
 ): Promise<Buffer> {
   const ctx = page.context();
@@ -877,11 +904,13 @@ async function downloadSimilarityPdf(
 
   // ── Step 1: open the similarity viewer ──────────────────────────────────────
   await onProgress("dl-step1: clicking similarity score link to open viewer");
+  await diag(page, "dl-before-sim-click");
   const newPagePromise = ctx.waitForEvent("page", { timeout: 60_000 }).catch(() => null);
 
   const simClicked = await smartClick(page, SEL.similarityCell,
     "the similarity percentage link or score cell that opens the Turnitin report viewer", onProgress, 15_000);
   if (!simClicked) {
+    await diag(page, "dl-sim-click-failed");
     await dumpPageControls(page, onProgress);
     throw new Error("Cannot click similarity cell — check [diag] lines above for correct selector");
   }
@@ -899,11 +928,13 @@ async function downloadSimilarityPdf(
 
   // The viewer is a React SPA — wait for toolbar to fully render.
   await viewer.waitForTimeout(6_000);
+  await diag(viewer, "dl-viewer-loaded");
 
   // Move the mouse to the right panel area so any auto-hiding toolbar becomes
   // visible/active before we start looking for the download button.
   await viewer.mouse.move(1280, 450).catch(() => {});
   await viewer.waitForTimeout(1_000);
+  await diag(viewer, "dl-toolbar-hover");
 
   // ── Steps 2+3: find download button → open dialog → click "Current View" ──────
   // Register the download listener NOW, before any clicking, so we never miss it.
@@ -975,15 +1006,18 @@ async function downloadSimilarityPdf(
         const cx = Math.round(box.x + box.width / 2);
         const cy = Math.round(box.y + box.height / 2);
         await onProgress(`dl-step2: download button found at (${cx},${cy}), hovering then clicking`);
+        await diag(viewer, "dl-btn-found");
         await viewer.mouse.move(cx, cy);
         await viewer.waitForTimeout(400);
         await viewer.mouse.click(cx, cy);
         await viewer.waitForTimeout(3_000); // allow dialog animation to complete
         if (await dlDialogOpen()) {
           await onProgress("dl-step2: dialog found — 'Current View' visible");
+          await diag(viewer, "dl-dialog-open");
           menuOpened = true;
         } else {
           await onProgress("dl-step2: dialog not visible yet, retrying");
+          await diag(viewer, "dl-dialog-not-open");
         }
       }
     }
@@ -994,6 +1028,7 @@ async function downloadSimilarityPdf(
   // Only reached if the class-based fast path didn't match (future UI change).
   if (!menuOpened) {
     await onProgress("dl-step2: fast path missed — probing main-frame [role=button] elements");
+    await diag(viewer, "dl-probe-start");
     const btns = await mainFrame.locator("[role='button'], button").all().catch(() => [] as Locator[]);
     await onProgress(`dl-step2: probing ${btns.length} elements`);
     for (const btn of btns) {
@@ -1013,7 +1048,10 @@ async function downloadSimilarityPdf(
           await viewer.goBack({ timeout: 10_000 }).catch(() => {});
           continue;
         }
-        if (await dlDialogOpen()) { menuOpened = true; }
+        if (await dlDialogOpen()) {
+          await diag(viewer, "dl-probe-dialog-open");
+          menuOpened = true;
+        }
         if (menuOpened) break;
       } catch {
         if (viewer.isClosed()) break;
@@ -1022,6 +1060,7 @@ async function downloadSimilarityPdf(
   }
 
   if (!menuOpened) {
+    await diag(viewer.isClosed() ? page : viewer, "dl-menu-failed");
     if (!viewer.isClosed()) await dumpPageControls(viewer, onProgress);
     throw new Error(
       "Could not open the Turnitin download menu — see [diag] lines above.",
@@ -1032,7 +1071,9 @@ async function downloadSimilarityPdf(
 
   // ── Step 3: click "Current View" in the open dialog ────────────────────────
   await onProgress("dl-step3: clicking 'Current View'");
+  await diag(viewer, "dl-before-current-view");
   if (!(await clickCurrentView(15_000))) {
+    await diag(viewer, "dl-current-view-failed");
     if (!viewer.isClosed()) await dumpPageControls(viewer, onProgress);
     throw new Error("Download dialog open but could not click 'Current View' — see [diag] lines above.");
   }

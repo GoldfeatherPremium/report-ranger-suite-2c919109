@@ -262,3 +262,15 @@ export async function log(workerId: string, jobId: string | null, level: "info" 
   });
   console.log(`[${level}] ${message}`);
 }
+
+// Upload a diagnostic screenshot to the shared training bucket.
+// Path: run/student/{jobId}/{label}.png
+// Returns a 7-day signed URL so the operator can view it in the admin log.
+export async function uploadDiag(jobId: string, label: string, buf: Buffer): Promise<string | null> {
+  if (!buf.length) return null;
+  const path = `run/student/${jobId}/${label}.png`;
+  const { error } = await supabase.storage.from("training").upload(path, buf, { contentType: "image/png", upsert: true });
+  if (error) { console.error("diag upload:", error.message); return null; }
+  const { data } = await supabase.storage.from("training").createSignedUrl(path, 60 * 60 * 24 * 7);
+  return data?.signedUrl ?? null;
+}
