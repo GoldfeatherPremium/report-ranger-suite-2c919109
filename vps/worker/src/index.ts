@@ -33,7 +33,7 @@ async function heartbeatLoop() {
 
 async function watchdogLoop() {
   while (!shuttingDown) {
-    try { await supabase.rpc("requeue_stuck_jobs", { p_max_age_minutes: 45 }); } catch (e) { console.error("watchdog", e); }
+    try { await supabase.rpc("fail_stuck_jobs", { p_max_age_minutes: 30 }); } catch (e) { console.error("watchdog", e); }
     await sleep(60_000);
   }
 }
