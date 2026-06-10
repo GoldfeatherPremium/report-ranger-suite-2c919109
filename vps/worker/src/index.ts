@@ -19,7 +19,7 @@ const POLL_INTERVAL_MS      = envNum("POLL_INTERVAL_MS",       30_000);   // 30 
 const CLAIM_IDLE_MS         = envNum("CLAIM_IDLE_MS",          10_000);
 const HEARTBEAT_MS          = envNum("HEARTBEAT_MS",           30_000);
 const CONCURRENCY           = envNum("CONCURRENCY",                 3);   // parallel jobs
-const JOB_TIMEOUT_MS        = envNum("JOB_TIMEOUT_MS",      3_600_000);   // 1 hour total per job
+const JOB_TIMEOUT_MS        = envNum("JOB_TIMEOUT_MS",      1_800_000);   // 30 min total per job
 
 let activeJobs = 0;
 let shuttingDown = false;
