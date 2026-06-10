@@ -897,8 +897,32 @@ async function downloadSimilarityPdf(
   await viewer.waitForLoadState("domcontentloaded", { timeout: 60_000 }).catch(() => {});
   await onProgress(`dl-step1 done: viewer url=${viewer.url()}`);
 
-  // The viewer is a React SPA — wait for toolbar to fully render.
-  await viewer.waitForTimeout(6_000);
+  // The viewer is a React SPA that renders the document asynchronously.
+  // Large documents can take up to 60 s to fully paint. Rather than a fixed
+  // sleep, we poll until the right-panel toolbar elements appear OR the
+  // document iframe starts showing text content, then add a short settle delay.
+  const VIEWER_READY_SEL = [
+    '[class*="sidebar-download-button"]',
+    '[class*="tii-icon-download"]',
+    '[title="Download"]',
+    '[class*="sidebar"]',
+    '[class*="toolbar"]',
+    'iframe[id*="iframe"]',
+    'iframe[class*="document"]',
+  ].join(", ");
+  await onProgress("waiting for viewer to fully render (up to 60 s)…");
+  {
+    const readyDeadline = Date.now() + 60_000;
+    let ready = false;
+    while (Date.now() < readyDeadline) {
+      const n = await viewer.mainFrame().locator(VIEWER_READY_SEL).count().catch(() => 0);
+      if (n > 0) { ready = true; break; }
+      await viewer.waitForTimeout(1_000);
+    }
+    await onProgress(ready ? "viewer ready — toolbar/document elements found" : "viewer ready wait timed out — proceeding anyway");
+    // Brief settle so React finishes mounting click handlers
+    await viewer.waitForTimeout(2_000);
+  }
 
   // Dismiss the "Welcome / Take a quick tour" modal if it appears (<5% of loads).
   const welcomeClose = [
@@ -976,7 +1000,7 @@ async function downloadSimilarityPdf(
   const mainFrame = viewer.mainFrame();
 
   let menuOpened = false;
-  const dlBtnDeadline = Date.now() + 15_000;
+  const dlBtnDeadline = Date.now() + 60_000;
   while (Date.now() < dlBtnDeadline && !menuOpened) {
     const n = await mainFrame.locator(DL_BTN_SEL).count().catch(() => 0);
     if (n > 0) {
