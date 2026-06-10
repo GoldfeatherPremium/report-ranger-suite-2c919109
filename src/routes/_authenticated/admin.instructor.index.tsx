@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
-import { Plus, ChevronRight, Power, Trash2 } from "lucide-react";
+import { Plus, ChevronRight, Power, Trash2, Pencil } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/admin/instructor/")({ component: Page });
 
@@ -71,6 +71,7 @@ function Page() {
                 </td>
                 <td className="px-4 py-3 text-right">
                   <div className="flex items-center justify-end gap-1">
+                    <EditAccountButton account={a} onUpdated={() => refetch()} />
                     <Button asChild variant="ghost" size="sm">
                       <Link to="/admin/instructor/$accountId" params={{ accountId: a.id }}>
                         Classes <ChevronRight className="ml-1 h-4 w-4" />
@@ -85,6 +86,58 @@ function Page() {
         </table>
       </div>
     </div>
+  );
+}
+
+function EditAccountButton({ account, onUpdated }: { account: Account; onUpdated: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [label, setLabel] = useState(account.label);
+  const [email, setEmail] = useState(account.email);
+  const [password, setPassword] = useState("");
+  const [loginUrl, setLoginUrl] = useState(account.login_url);
+  const [notes, setNotes] = useState(account.notes ?? "");
+  const [saving, setSaving] = useState(false);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!label || !email) { toast.error("Label and email are required"); return; }
+    setSaving(true);
+    const { error } = await supabase.rpc("update_instructor_account" as never, {
+      p_id: account.id,
+      p_label: label,
+      p_email: email,
+      p_password: password || null,
+      p_login_url: loginUrl,
+      p_notes: notes || null,
+    } as never);
+    setSaving(false);
+    if (error) { toast.error(error.message); return; }
+    toast.success("Account updated");
+    setOpen(false);
+    onUpdated();
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button variant="ghost" size="sm">
+          <Pencil className="h-4 w-4" />
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Edit instructor account</DialogTitle></DialogHeader>
+        <form onSubmit={submit} className="space-y-3">
+          <div><Label>Label</Label><Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Instructor #1" /></div>
+          <div><Label>Email</Label><Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></div>
+          <div><Label>Password</Label><Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Leave blank to keep current" /></div>
+          <div><Label>Login URL</Label><Input value={loginUrl} onChange={(e) => setLoginUrl(e.target.value)} /></div>
+          <div><Label>Notes</Label><Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="optional" /></div>
+          <DialogFooter>
+            <Button type="submit" disabled={saving}>{saving ? "Saving…" : "Save changes"}</Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -116,7 +169,7 @@ function DeleteAccountButton({ account, onDeleted }: { account: Account; onDelet
             This permanently removes the instructor account ({account.email}) and all of its classes and assignments. Jobs that already submitted under this account will lose their references. This cannot be undone.
           </AlertDialogDescription>
         </AlertDialogHeader>
-        <AlertDialogFooter>
+        <AlertFooter>
           <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
           <AlertDialogAction onClick={(e) => { e.preventDefault(); handleDelete(); }} disabled={deleting} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
             {deleting ? "Deleting…" : "Delete"}
