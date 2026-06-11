@@ -990,71 +990,70 @@ async function downloadSimilarityPdf(
   //   <div role="button" title="Download" class="... tii-icon-download sidebar-download-button ...">
   // Clicking it opens a CENTER DIALOG with three options: "Current View", "Digital Receipt",
   // "Originally Submitted File".
+  // NOTE: the button lives in a child iframe of the viewer, not the main frame — search all frames.
   const DL_BTN_SEL = [
     '[class*="tii-icon-download"]',
     '[class*="sidebar-download-button"]',
     '[title="Download"]',
   ].join(", ");
 
-  // Only look in the main frame — the toolbar lives there, not in the document sub-iframe.
-  const mainFrame = viewer.mainFrame();
-
   let menuOpened = false;
   const dlBtnDeadline = Date.now() + 60_000;
   while (Date.now() < dlBtnDeadline && !menuOpened) {
-    const n = await mainFrame.locator(DL_BTN_SEL).count().catch(() => 0);
-    if (n > 0) {
-      // Get the element's real screen coordinates and use viewer.mouse.click() —
-      // this dispatches trusted low-level pointer events (isTrusted=true) that
-      // React's event handlers respond to.  force:true / dispatchEvent both fail
-      // on Turnitin because the app checks event.isTrusted.
-      const box = await mainFrame.locator(DL_BTN_SEL).first().boundingBox().catch(() => null);
-      if (box) {
-        const cx = Math.round(box.x + box.width / 2);
-        const cy = Math.round(box.y + box.height / 2);
-        await onProgress(`dl-step2: download button found at (${cx},${cy}), hovering then clicking`);
-        await viewer.mouse.move(cx, cy);
-        await viewer.waitForTimeout(400);
-        await viewer.mouse.click(cx, cy);
-        await viewer.waitForTimeout(3_000); // allow dialog animation to complete
-        if (await dlDialogOpen()) {
-          await onProgress("dl-step2: dialog found — 'Current View' visible");
-          menuOpened = true;
-        } else {
-          await onProgress("dl-step2: dialog not visible yet, retrying");
-        }
+    for (const fr of v.frames()) {
+      const n = await fr.locator(DL_BTN_SEL).count().catch(() => 0);
+      if (n === 0) continue;
+      // Use viewer.mouse.click() at real coordinates — dispatches trusted pointer
+      // events (isTrusted=true) that React's handlers require. force/dispatchEvent fail.
+      const box = await fr.locator(DL_BTN_SEL).first().boundingBox().catch(() => null);
+      if (!box) continue;
+      const cx = Math.round(box.x + box.width / 2);
+      const cy = Math.round(box.y + box.height / 2);
+      await onProgress(`dl-step2: download button at (${cx},${cy}) in frame ${fr.url().slice(0, 60)}`);
+      await viewer.mouse.move(cx, cy);
+      await viewer.waitForTimeout(400);
+      await viewer.mouse.click(cx, cy);
+      await viewer.waitForTimeout(3_000); // allow dialog animation to complete
+      if (await dlDialogOpen()) {
+        await onProgress("dl-step2: dialog found — 'Current View' visible");
+        menuOpened = true;
+      } else {
+        await onProgress("dl-step2: dialog not visible yet, retrying");
       }
+      break;
     }
     if (!menuOpened) await viewer.waitForTimeout(1_000);
   }
 
-  // Probe fallback: iterate every [role="button"] in the main frame.
-  // Only reached if the class-based fast path didn't match (future UI change).
+  // Probe fallback: iterate every [role="button"] across ALL frames.
+  // Only reached if the selector-based fast path didn't match (future UI change).
   if (!menuOpened) {
-    await onProgress("dl-step2: fast path missed — probing main-frame [role=button] elements");
-    const btns = await mainFrame.locator("[role='button'], button").all().catch(() => [] as Locator[]);
-    await onProgress(`dl-step2: probing ${btns.length} elements`);
-    for (const btn of btns) {
-      if (viewer.isClosed()) break;
-      const beforeUrl = viewer.url();
-      try {
-        const box = await btn.boundingBox().catch(() => null);
-        if (!box) continue;
-        const cx = Math.round(box.x + box.width / 2);
-        const cy = Math.round(box.y + box.height / 2);
-        await viewer.mouse.move(cx, cy);
-        await viewer.waitForTimeout(200);
-        await viewer.mouse.click(cx, cy);
-        await viewer.waitForTimeout(2_500);
-        if (viewer.isClosed()) break;
-        if (viewer.url() !== beforeUrl) {
-          await viewer.goBack({ timeout: 10_000 }).catch(() => {});
-          continue;
+    await onProgress("dl-step2: fast path missed — probing all-frame [role=button] elements");
+    outer: for (const fr of v.frames()) {
+      const btns = await fr.locator("[role='button'], button").all().catch(() => [] as Locator[]);
+      await onProgress(`dl-step2: probing ${btns.length} elements in frame ${fr.url().slice(0, 60)}`);
+      for (const btn of btns) {
+        if (viewer.isClosed()) break outer;
+        const beforeUrl = viewer.url();
+        try {
+          const box = await btn.boundingBox().catch(() => null);
+          if (!box) continue;
+          const cx = Math.round(box.x + box.width / 2);
+          const cy = Math.round(box.y + box.height / 2);
+          await viewer.mouse.move(cx, cy);
+          await viewer.waitForTimeout(200);
+          await viewer.mouse.click(cx, cy);
+          await viewer.waitForTimeout(2_500);
+          if (viewer.isClosed()) break outer;
+          if (viewer.url() !== beforeUrl) {
+            await viewer.goBack({ timeout: 10_000 }).catch(() => {});
+            continue;
+          }
+          if (await dlDialogOpen()) { menuOpened = true; }
+          if (menuOpened) break outer;
+        } catch {
+          if (viewer.isClosed()) break outer;
         }
-        if (await dlDialogOpen()) { menuOpened = true; }
-        if (menuOpened) break;
-      } catch {
-        if (viewer.isClosed()) break;
       }
     }
   }
