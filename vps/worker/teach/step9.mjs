@@ -58,6 +58,7 @@ await p.locator(SEL.password).first().fill(PASSWORD, { timeout: 15000 });
 await p.locator(SEL.submit).first().click({ timeout: 15000 });
 await p.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
 
+console.log("[info] step9 version v3-diag");
 console.log(`[info] goto ${SUBMIT_URL}`);
 await p.goto(SUBMIT_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
 await p.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
@@ -97,6 +98,21 @@ async function scanForSimilarity() {
         return { url: location.href, hits };
       });
       if (res.hits && res.hits.length) return { ctx: c, ...res };
+    } catch {}
+  }
+  // Diagnostic: dump every short text containing "%" so we can see what's on the page.
+  for (const c of contexts) {
+    try {
+      const diag = await c.evaluate(() => {
+        const out = [];
+        for (const el of document.querySelectorAll("*")) {
+          if (el.children.length) continue;
+          const t = (el.textContent || "").trim();
+          if (t.includes("%") && t.length <= 30) out.push({ tag: el.tagName, text: t });
+        }
+        return { url: location.href, pctTexts: out.slice(0, 20), frames: document.querySelectorAll("iframe").length };
+      });
+      console.log("[diag-scan]", JSON.stringify(diag));
     } catch {}
   }
   return null;
