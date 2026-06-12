@@ -63,29 +63,29 @@ await p.goto(SUBMIT_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
 await p.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
 await shot(p, "dashboard-initial");
 
-// Scan all frames (main + iframes) for a similarity %.
+// Scan all frames (main + iframes) for a similarity %. Walk text nodes so we
+// catch cases where "24%" sits next to a sibling color-block element inside
+// the same Similarity cell.
 async function scanForSimilarity() {
   const contexts = [p, ...p.frames()];
   for (const c of contexts) {
     try {
       const res = await c.evaluate(() => {
-        // Look for any clickable/text element whose normalized text is "NN%".
-        const all = Array.from(document.querySelectorAll("a, button, span, div, td"));
         const pctRe = /^\s*(\d{1,3})\s*%\s*$/;
         const hits = [];
-        for (const el of all) {
-          if (el.offsetParent === null) continue;
-          const t = (el.innerText || el.textContent || "").trim();
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        let node;
+        while ((node = walker.nextNode())) {
+          const t = (node.nodeValue || "").trim();
           const m = t.match(pctRe);
-          if (m) {
-            const n = parseInt(m[1], 10);
-            if (n >= 0 && n <= 100) {
-              // Skip nested duplicates: only keep leaf-ish elements.
-              if (el.children.length === 0 || el.children.length === 1) {
-                hits.push({ pct: n, tag: el.tagName, text: t.slice(0, 40) });
-              }
-            }
-          }
+          if (!m) continue;
+          const n = parseInt(m[1], 10);
+          if (n < 0 || n > 100) continue;
+          const el = node.parentElement;
+          if (!el) continue;
+          const r = el.getBoundingClientRect();
+          if (r.width === 0 && r.height === 0) continue;
+          hits.push({ pct: n, tag: el.tagName, text: t.slice(0, 40), cls: el.className?.toString?.().slice(0, 60) || "" });
         }
         return { url: location.href, hits };
       });
@@ -98,16 +98,20 @@ async function scanForSimilarity() {
 async function clickSimilarity(c) {
   return await c.evaluate(() => {
     const pctRe = /^\s*(\d{1,3})\s*%\s*$/;
-    const all = Array.from(document.querySelectorAll("a, button, span, div, td"));
-    for (const el of all) {
-      if (el.offsetParent === null) continue;
-      const t = (el.innerText || el.textContent || "").trim();
-      if (pctRe.test(t) && (el.children.length === 0 || el.children.length === 1)) {
-        // Walk up to find a clickable ancestor if needed.
-        let target = el;
-        for (let i = 0; i < 3; i++) {
-          if (target.tagName === "A" || target.tagName === "BUTTON" || target.onclick) break;
-          if (target.parentElement) target = target.parentElement; else break;
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      const t = (node.nodeValue || "").trim();
+      if (!pctRe.test(t)) continue;
+      const el = node.parentElement;
+      if (!el) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 && r.height === 0) continue;
+      // Walk up to find a clickable ancestor (A/BUTTON/onclick), max 5 hops.
+      let target = el;
+      for (let i = 0; i < 5; i++) {
+        if (target.tagName === "A" || target.tagName === "BUTTON" || target.onclick) break;
+        if (target.parentElement) target = target.parentElement; else break;
         }
         target.scrollIntoView();
         target.click();
