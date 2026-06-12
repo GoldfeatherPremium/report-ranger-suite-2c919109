@@ -1,6 +1,5 @@
-// Step 3 — log in, open the class, capture the assignment list,
-// and dump every clickable element on the class page so we can pick
-// the right "Submit" button next.
+// Step 3 — log in, then navigate directly to the slot's configured
+// submit_url (set by admin) and dump every clickable element on that page.
 import { chromium } from "playwright";
 import { createClient } from "@supabase/supabase-js";
 import dotenv from "dotenv";
@@ -11,9 +10,9 @@ dotenv.config();
 
 const EMAIL = process.env.TT_EMAIL;
 const PASSWORD = process.env.TT_PASSWORD;
+const SUBMIT_URL = process.env.TT_SUBMIT_URL || "https://www.turnitin.com/submit_page.asp?lang=en_us";
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SR_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const CLASS_NAME = process.env.TT_CLASS_NAME || "Educación Primaria";
 if (!EMAIL || !PASSWORD) { console.error("Set TT_EMAIL and TT_PASSWORD"); process.exit(2); }
 if (!SUPABASE_URL || !SR_KEY) { console.error("Missing SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY"); process.exit(2); }
 
@@ -63,23 +62,11 @@ await p.waitForLoadState("domcontentloaded", { timeout: 30000 }).catch(() => {})
 await p.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
 await shot(p, "home");
 
-// ── Click the class link ─────────────────────────────────────────────────────
-const classLink = p.locator(`a:has-text("${CLASS_NAME}")`).first();
-const classCount = await classLink.count();
-console.log(`[info] class link "${CLASS_NAME}" found: ${classCount}`);
-if (classCount === 0) {
-  // Fallback: list every link on the homepage so we can pick by hand.
-  const links = await p.$$eval("a", (as) =>
-    as.slice(0, 50).map((a) => ({ text: a.innerText.trim().slice(0, 80), href: a.href }))
-      .filter((x) => x.text && x.href));
-  console.log("[debug] homepage links:", JSON.stringify(links, null, 2));
-  await b.close();
-  process.exit(3);
-}
-await classLink.click({ timeout: 15000 });
-await p.waitForLoadState("domcontentloaded", { timeout: 30000 }).catch(() => {});
+// ── Navigate directly to the slot's submit_url ───────────────────────────────
+console.log(`[info] navigating to slot submit_url: ${SUBMIT_URL}`);
+await p.goto(SUBMIT_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
 await p.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
-await shot(p, "class-page");
+await shot(p, "submit-page");
 
 // ── Dump clickable elements on the class page ────────────────────────────────
 const elements = await p.evaluate(() => {
@@ -105,7 +92,7 @@ console.log(JSON.stringify({
   session: SESSION,
   url: p.url(),
   title: await p.title(),
-  classCount,
+  submitUrl: SUBMIT_URL,
   elements,
 }, null, 2));
 
