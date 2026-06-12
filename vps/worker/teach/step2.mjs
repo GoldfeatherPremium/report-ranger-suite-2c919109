@@ -8,6 +8,7 @@ import { createClient } from "@supabase/supabase-js";
 import dotenv from "dotenv";
 import fs from "node:fs/promises";
 import path from "node:path";
+import ws from "ws";
 
 dotenv.config(); // loads ./worker/.env when run from $WD
 
