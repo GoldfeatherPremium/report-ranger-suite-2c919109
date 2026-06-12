@@ -142,7 +142,11 @@ const MAX_MS = 20 * 60_000;
 let attempt = 0;
 let found = null;
 
-while (Date.now() - startedAt < MAX_MS) {
+// Immediate scan — the % may already be visible on first load.
+found = await scanForSimilarity();
+if (found) console.log("[poll 0] similarity found immediately:", JSON.stringify(found.hits));
+
+while (!found && Date.now() - startedAt < MAX_MS) {
   attempt += 1;
   console.log(`[poll ${attempt}] sleeping 60s…`);
   await new Promise((r) => setTimeout(r, 60_000));
