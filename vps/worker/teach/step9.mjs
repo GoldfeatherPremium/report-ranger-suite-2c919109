@@ -58,6 +58,7 @@ await p.locator(SEL.password).first().fill(PASSWORD, { timeout: 15000 });
 await p.locator(SEL.submit).first().click({ timeout: 15000 });
 await p.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
 
+console.log("[info] step9 version v3-diag");
 console.log(`[info] goto ${SUBMIT_URL}`);
 await p.goto(SUBMIT_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
 await p.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
