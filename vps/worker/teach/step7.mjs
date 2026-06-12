@@ -135,28 +135,37 @@ await p.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
 await new Promise((r) => setTimeout(r, 3000));
 await shot(p, `submit-modal-${flow}`);
 
-// 5) Fill Submission Title (input near label "Submission Title", placeholder "Untitled")
-const titleSelectors = [
-  'input[placeholder="Untitled" i]',
-  'input[name*="title" i]',
-  'input[id*="title" i]',
-  'input[type="text"]',
-];
-let titleFilled = false;
-for (const sel of titleSelectors) {
-  const loc = p.locator(sel).first();
-  if (await loc.count().catch(() => 0)) {
-    try { await loc.fill(TITLE, { timeout: 5000 }); titleFilled = true; console.log(`[diag] title filled via ${sel}`); break; } catch {}
+// 5) Attach file (title auto-fills from filename — do NOT fill manually).
+// Search main page + all iframes for input[type=file].
+async function findFileInput() {
+  const main = p.locator('input[type="file"]').first();
+  if (await main.count().catch(() => 0)) return { loc: main, where: "main" };
+  for (const f of p.frames()) {
+    try {
+      const loc = f.locator('input[type="file"]').first();
+      if (await loc.count().catch(() => 0)) return { loc, where: `frame:${f.url()}` };
+    } catch {}
   }
+  return null;
 }
-if (!titleFilled) console.warn("[warn] could not fill submission title");
 
-// 6) Set file on Choose File input
-const fileInput = p.locator('input[type="file"]').first();
-await fileInput.waitFor({ state: "attached", timeout: 15000 });
-await fileInput.setInputFiles(SAMPLE);
+let fileInput = null;
+const deadline = Date.now() + 20000;
+while (Date.now() < deadline) {
+  fileInput = await findFileInput();
+  if (fileInput) break;
+  await new Promise((r) => setTimeout(r, 500));
+}
+if (!fileInput) {
+  console.error("[err] no input[type=file] found in page or iframes");
+  await shot(p, "no-file-input");
+  await b.close();
+  process.exit(1);
+}
+console.log(`[diag] file input found: ${fileInput.where}`);
+await fileInput.loc.setInputFiles(SAMPLE);
 console.log(`[diag] file attached: ${path.basename(SAMPLE)}`);
-await new Promise((r) => setTimeout(r, 2000));
+await new Promise((r) => setTimeout(r, 3000));
 await shot(p, "file-attached");
 
 // 7) Click "Upload and Review"
