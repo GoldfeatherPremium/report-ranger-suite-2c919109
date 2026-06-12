@@ -63,9 +63,9 @@ await p.goto(SUBMIT_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
 await p.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
 await shot(p, "dashboard-initial");
 
-// Scan all frames (main + iframes) for a similarity %. Walk text nodes so we
-// catch cases where "24%" sits next to a sibling color-block element inside
-// the same Similarity cell.
+// Scan all frames (main + iframes) for a similarity %. Match on element
+// textContent (so "24" + "%" split across nodes still matches) and recurse
+// into shadow roots.
 async function scanForSimilarity() {
   const contexts = [p, ...p.frames()];
   for (const c of contexts) {
@@ -73,20 +73,27 @@ async function scanForSimilarity() {
       const res = await c.evaluate(() => {
         const pctRe = /^\s*(\d{1,3})\s*%\s*$/;
         const hits = [];
-        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-        let node;
-        while ((node = walker.nextNode())) {
-          const t = (node.nodeValue || "").trim();
-          const m = t.match(pctRe);
-          if (!m) continue;
-          const n = parseInt(m[1], 10);
-          if (n < 0 || n > 100) continue;
-          const el = node.parentElement;
-          if (!el) continue;
-          const r = el.getBoundingClientRect();
-          if (r.width === 0 && r.height === 0) continue;
-          hits.push({ pct: n, tag: el.tagName, text: t.slice(0, 40), cls: el.className?.toString?.().slice(0, 60) || "" });
-        }
+        const visit = (root) => {
+          const els = root.querySelectorAll("*");
+          for (const el of els) {
+            if (el.shadowRoot) visit(el.shadowRoot);
+            const t = (el.textContent || "").trim();
+            const m = t.match(pctRe);
+            if (!m) continue;
+            const n = parseInt(m[1], 10);
+            if (n < 0 || n > 100) continue;
+            const r = el.getBoundingClientRect();
+            if (r.width === 0 && r.height === 0) continue;
+            // keep only the innermost matching element
+            let inner = false;
+            for (const ch of el.querySelectorAll("*")) {
+              if (pctRe.test((ch.textContent || "").trim())) { inner = true; break; }
+            }
+            if (inner) continue;
+            hits.push({ pct: n, tag: el.tagName, text: t.slice(0, 40), cls: el.className?.toString?.().slice(0, 60) || "" });
+          }
+        };
+        visit(document);
         return { url: location.href, hits };
       });
       if (res.hits && res.hits.length) return { ctx: c, ...res };
@@ -98,26 +105,35 @@ async function scanForSimilarity() {
 async function clickSimilarity(c) {
   return await c.evaluate(() => {
     const pctRe = /^\s*(\d{1,3})\s*%\s*$/;
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-    let node;
-    while ((node = walker.nextNode())) {
-      const t = (node.nodeValue || "").trim();
-      if (!pctRe.test(t)) continue;
-      const el = node.parentElement;
-      if (!el) continue;
-      const r = el.getBoundingClientRect();
-      if (r.width === 0 && r.height === 0) continue;
-      // Walk up to find a clickable ancestor (A/BUTTON/onclick), max 5 hops.
-      let target = el;
-      for (let i = 0; i < 5; i++) {
-        if (target.tagName === "A" || target.tagName === "BUTTON" || target.onclick) break;
-        if (target.parentElement) target = target.parentElement; else break;
+    let match = null;
+    const visit = (root) => {
+      for (const el of root.querySelectorAll("*")) {
+        if (match) return;
+        if (el.shadowRoot) visit(el.shadowRoot);
+        const t = (el.textContent || "").trim();
+        if (!pctRe.test(t)) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width === 0 && r.height === 0) continue;
+        let inner = false;
+        for (const ch of el.querySelectorAll("*")) {
+          if (pctRe.test((ch.textContent || "").trim())) { inner = true; break; }
+        }
+        if (inner) continue;
+        match = el;
       }
-      target.scrollIntoView();
-      target.click();
-      return { ok: true, text: t, tag: target.tagName };
+    };
+    visit(document);
+    if (!match) return { ok: false };
+    const text = (match.textContent || "").trim();
+    // Walk up to find a clickable ancestor (A/BUTTON/onclick), max 5 hops.
+    let target = match;
+    for (let i = 0; i < 5; i++) {
+      if (target.tagName === "A" || target.tagName === "BUTTON" || target.onclick) break;
+      if (target.parentElement) target = target.parentElement; else break;
     }
-    return { ok: false };
+    target.scrollIntoView();
+    target.click();
+    return { ok: true, text, tag: target.tagName };
   });
 }
 
@@ -126,7 +142,11 @@ const MAX_MS = 20 * 60_000;
 let attempt = 0;
 let found = null;
 
-while (Date.now() - startedAt < MAX_MS) {
+// Immediate scan — the % may already be visible on first load.
+found = await scanForSimilarity();
+if (found) console.log("[poll 0] similarity found immediately:", JSON.stringify(found.hits));
+
+while (!found && Date.now() - startedAt < MAX_MS) {
   attempt += 1;
   console.log(`[poll ${attempt}] sleeping 60s…`);
   await new Promise((r) => setTimeout(r, 60_000));
