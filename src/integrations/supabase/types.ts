@@ -982,6 +982,13 @@ export type Database = {
       fail_stuck_jobs: { Args: { p_max_age_minutes?: number }; Returns: number }
       instructor_job_owns_lane: { Args: { p_job_id: string }; Returns: boolean }
       is_admin: { Args: never; Returns: boolean }
+      list_job_slot_labels: {
+        Args: { p_job_ids: string[] }
+        Returns: {
+          job_id: string
+          slot_label: string
+        }[]
+      }
       reassign_instructor_job_assignment: {
         Args: { p_exclude_assignment_ids: string[]; p_job_id: string }
         Returns: string
