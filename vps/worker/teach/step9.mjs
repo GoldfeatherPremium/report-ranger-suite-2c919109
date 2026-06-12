@@ -1,0 +1,164 @@
+// Step 9 — poll the assignment dashboard for the similarity % after submission.
+// Logs in, navigates to TT_SUBMIT_URL, then every 60s reloads and reads the
+// Similarity column. If a percentage (0-100%) appears, click it. Repeats up to
+// 20 minutes.
+import { chromium } from "playwright";
+import { createClient } from "@supabase/supabase-js";
+import dotenv from "dotenv";
+import fs from "node:fs/promises";
+import ws from "ws";
+
+dotenv.config();
+
+const EMAIL = process.env.TT_EMAIL;
+const PASSWORD = process.env.TT_PASSWORD;
+const SUBMIT_URL = process.env.TT_SUBMIT_URL;
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SR_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+if (!EMAIL || !PASSWORD || !SUBMIT_URL) { console.error("Set TT_EMAIL, TT_PASSWORD, TT_SUBMIT_URL"); process.exit(2); }
+if (!SUPABASE_URL || !SR_KEY) { console.error("Missing SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY"); process.exit(2); }
+
+const sb = createClient(SUPABASE_URL, SR_KEY, { auth: { persistSession: false }, realtime: { transport: ws } });
+const SESSION = `teach/${new Date().toISOString().replace(/[:.]/g, "-")}`;
+let n = 0;
+async function shot(page, label) {
+  n += 1;
+  const name = `${String(n).padStart(2, "0")}-${label}.png`;
+  const local = `/tmp/${name}`;
+  await page.screenshot({ path: local, fullPage: true });
+  const buf = await fs.readFile(local);
+  const key = `${SESSION}/${name}`;
+  const up = await sb.storage.from("training").upload(key, buf, { contentType: "image/png", upsert: true });
+  if (up.error) { console.error("upload failed", up.error.message); return; }
+  const signed = await sb.storage.from("training").createSignedUrl(key, 60 * 60 * 24 * 7);
+  console.log(`[shot] ${label} → ${signed.data?.signedUrl ?? "(no url)"}`);
+}
+
+const SEL = {
+  email: 'input[name="email"], input#email, input[type="email"]',
+  password: 'input[name="password"], input#password, input[type="password"]',
+  submit: 'button[type="submit"], input[type="submit"], #login',
+};
+
+const b = await chromium.launch({ headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
+const ctx = await b.newContext({
+  userAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  viewport: { width: 1366, height: 900 },
+  locale: "en-US",
+  acceptDownloads: true,
+});
+const p = await ctx.newPage();
+
+// Login
+await p.goto("https://www.turnitin.com/login_page.asp?lang=en_us", { waitUntil: "domcontentloaded" });
+await p.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
+await p.locator(SEL.email).first().fill(EMAIL, { timeout: 15000 });
+await p.locator(SEL.password).first().fill(PASSWORD, { timeout: 15000 });
+await p.locator(SEL.submit).first().click({ timeout: 15000 });
+await p.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
+
+console.log(`[info] goto ${SUBMIT_URL}`);
+await p.goto(SUBMIT_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
+await p.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
+await shot(p, "dashboard-initial");
+
+// Scan all frames (main + iframes) for a similarity %.
+async function scanForSimilarity() {
+  const contexts = [p, ...p.frames()];
+  for (const c of contexts) {
+    try {
+      const res = await c.evaluate(() => {
+        // Look for any clickable/text element whose normalized text is "NN%".
+        const all = Array.from(document.querySelectorAll("a, button, span, div, td"));
+        const pctRe = /^\s*(\d{1,3})\s*%\s*$/;
+        const hits = [];
+        for (const el of all) {
+          if (el.offsetParent === null) continue;
+          const t = (el.innerText || el.textContent || "").trim();
+          const m = t.match(pctRe);
+          if (m) {
+            const n = parseInt(m[1], 10);
+            if (n >= 0 && n <= 100) {
+              // Skip nested duplicates: only keep leaf-ish elements.
+              if (el.children.length === 0 || el.children.length === 1) {
+                hits.push({ pct: n, tag: el.tagName, text: t.slice(0, 40) });
+              }
+            }
+          }
+        }
+        return { url: location.href, hits };
+      });
+      if (res.hits && res.hits.length) return { ctx: c, ...res };
+    } catch {}
+  }
+  return null;
+}
+
+async function clickSimilarity(c) {
+  return await c.evaluate(() => {
+    const pctRe = /^\s*(\d{1,3})\s*%\s*$/;
+    const all = Array.from(document.querySelectorAll("a, button, span, div, td"));
+    for (const el of all) {
+      if (el.offsetParent === null) continue;
+      const t = (el.innerText || el.textContent || "").trim();
+      if (pctRe.test(t) && (el.children.length === 0 || el.children.length === 1)) {
+        // Walk up to find a clickable ancestor if needed.
+        let target = el;
+        for (let i = 0; i < 3; i++) {
+          if (target.tagName === "A" || target.tagName === "BUTTON" || target.onclick) break;
+          if (target.parentElement) target = target.parentElement; else break;
+        }
+        target.scrollIntoView();
+        target.click();
+        return { ok: true, text: t, tag: target.tagName };
+      }
+    }
+    return { ok: false };
+  });
+}
+
+const startedAt = Date.now();
+const MAX_MS = 20 * 60_000;
+let attempt = 0;
+let found = null;
+
+while (Date.now() - startedAt < MAX_MS) {
+  attempt += 1;
+  console.log(`[poll ${attempt}] sleeping 60s…`);
+  await new Promise((r) => setTimeout(r, 60_000));
+  console.log(`[poll ${attempt}] reloading`);
+  await p.reload({ waitUntil: "domcontentloaded", timeout: 30_000 }).catch((e) => console.log("[warn] reload:", e.message));
+  await p.waitForLoadState("networkidle", { timeout: 20_000 }).catch(() => {});
+  await new Promise((r) => setTimeout(r, 3000));
+  await shot(p, `poll-${String(attempt).padStart(2, "0")}`);
+  const scan = await scanForSimilarity();
+  if (scan && scan.hits.length) {
+    console.log(`[poll ${attempt}] similarity found:`, JSON.stringify(scan.hits));
+    found = scan;
+    break;
+  } else {
+    console.log(`[poll ${attempt}] no similarity % yet`);
+  }
+}
+
+if (!found) {
+  console.log("[done] similarity did not arrive within 20 min");
+  await shot(p, "timeout");
+  await b.close();
+  process.exit(0);
+}
+
+const click = await clickSimilarity(found.ctx);
+console.log("[diag] click similarity:", JSON.stringify(click));
+// Report may open in new tab
+await new Promise((r) => setTimeout(r, 6000));
+const pages = ctx.pages().filter((pg) => !pg.isClosed());
+const report = pages[pages.length - 1];
+await report.waitForLoadState("domcontentloaded", { timeout: 30_000 }).catch(() => {});
+await report.waitForLoadState("networkidle", { timeout: 20_000 }).catch(() => {});
+await new Promise((r) => setTimeout(r, 5000));
+await shot(report, "similarity-report");
+
+console.log(JSON.stringify({ step: 9, session: SESSION, hits: found.hits, click }, null, 2));
+await b.close();
