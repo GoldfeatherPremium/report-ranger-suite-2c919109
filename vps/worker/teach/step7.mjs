@@ -137,13 +137,13 @@ await shot(p, `submit-modal-${flow}`);
 
 // 5) Attach file (title auto-fills from filename — do NOT fill manually).
 // Search main page + all iframes for input[type=file].
-async function findFileInput() {
+async function findFileInputCtx() {
   const main = p.locator('input[type="file"]').first();
-  if (await main.count().catch(() => 0)) return { loc: main, where: "main" };
+  if (await main.count().catch(() => 0)) return { ctx: p, loc: main, where: "main" };
   for (const f of p.frames()) {
     try {
       const loc = f.locator('input[type="file"]').first();
-      if (await loc.count().catch(() => 0)) return { loc, where: `frame:${f.url()}` };
+      if (await loc.count().catch(() => 0)) return { ctx: f, loc, where: `frame:${f.url()}` };
     } catch {}
   }
   return null;
@@ -152,7 +152,7 @@ async function findFileInput() {
 let fileInput = null;
 const deadline = Date.now() + 20000;
 while (Date.now() < deadline) {
-  fileInput = await findFileInput();
+  fileInput = await findFileInputCtx();
   if (fileInput) break;
   await new Promise((r) => setTimeout(r, 500));
 }
@@ -168,27 +168,32 @@ console.log(`[diag] file attached: ${path.basename(SAMPLE)}`);
 await new Promise((r) => setTimeout(r, 3000));
 await shot(p, "file-attached");
 
-// 7) Click "Upload and Review"
-const clicked = await p.evaluate(() => {
+// 7) Click "Upload and Review" — in the SAME frame as the file input
+const ctx2 = fileInput.ctx;
+const clicked = await ctx2.evaluate(() => {
   const els = Array.from(document.querySelectorAll("button, a, input[type=button], input[type=submit]"));
+  const norm = (s) => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
   const btn = els.find((el) => {
     if (el.offsetParent === null) return false;
     if (el.disabled) return false;
-    const t = (el.innerText || el.value || "").trim().toLowerCase();
-    return t === "upload and review" || t.startsWith("upload and review");
+    const t = norm(el.innerText || el.value || el.getAttribute("aria-label") || "");
+    return t.includes("upload and review") || t.includes("upload & review");
   });
-  if (!btn) return null;
+  if (!btn) {
+    return { ok: false, candidates: els.slice(0, 30).map((e) => norm(e.innerText || e.value || "")).filter(Boolean) };
+  }
+  btn.scrollIntoView();
   btn.click();
-  return (btn.innerText || btn.value || "").trim();
+  return { ok: true, text: (btn.innerText || btn.value || "").trim() };
 });
-console.log("[diag] upload-and-review clicked:", clicked);
+console.log("[diag] upload-and-review clicked:", JSON.stringify(clicked));
 
 await p.waitForLoadState("networkidle", { timeout: 60000 }).catch(() => {});
-await new Promise((r) => setTimeout(r, 6000));
+await new Promise((r) => setTimeout(r, 8000));
 await shot(p, "review-page");
 
-// 8) Dump next-state inputs/buttons
-const post = await p.evaluate(() => {
+// 8) Dump next-state inputs/buttons (from same frame)
+const post = await ctx2.evaluate(() => {
   const inputs = Array.from(document.querySelectorAll("input, select, textarea")).map((el) => ({
     tag: el.tagName.toLowerCase(), type: el.type, id: el.id, name: el.name,
     accept: el.accept, visible: el.offsetParent !== null, placeholder: el.placeholder,
@@ -204,3 +209,4 @@ const post = await p.evaluate(() => {
 console.log(JSON.stringify({ step: 7, flow, session: SESSION, detect, post }, null, 2));
 
 await b.close();
+
