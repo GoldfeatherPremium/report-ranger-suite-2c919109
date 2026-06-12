@@ -96,6 +96,7 @@ export function JobsTable({
               <th className="px-4 py-3 font-medium">Document</th>
               {showUser && <th className="px-4 py-3 font-medium">User</th>}
               <th className="px-4 py-3 font-medium">Status</th>
+              <th className="px-4 py-3 font-medium">Slot</th>
               <th className="px-4 py-3 font-medium">Created</th>
               <th className="px-4 py-3 font-medium text-right">Actions</th>
             </tr>
