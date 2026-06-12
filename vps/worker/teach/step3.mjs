@@ -1,6 +1,5 @@
-// Step 3 — log in, open the class, capture the assignment list,
-// and dump every clickable element on the class page so we can pick
-// the right "Submit" button next.
+// Step 3 — log in, then navigate directly to the slot's configured
+// submit_url (set by admin) and dump every clickable element on that page.
 import { chromium } from "playwright";
 import { createClient } from "@supabase/supabase-js";
 import dotenv from "dotenv";
@@ -11,9 +10,9 @@ dotenv.config();
 
 const EMAIL = process.env.TT_EMAIL;
 const PASSWORD = process.env.TT_PASSWORD;
+const SUBMIT_URL = process.env.TT_SUBMIT_URL || "https://www.turnitin.com/submit_page.asp?lang=en_us";
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SR_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const CLASS_NAME = process.env.TT_CLASS_NAME || "Educación Primaria";
 if (!EMAIL || !PASSWORD) { console.error("Set TT_EMAIL and TT_PASSWORD"); process.exit(2); }
 if (!SUPABASE_URL || !SR_KEY) { console.error("Missing SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY"); process.exit(2); }
 
