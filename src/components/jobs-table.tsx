@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
 import { Download, RotateCw, X, Trash2, FileText } from "lucide-react";
 import { toast } from "sonner";
@@ -6,6 +7,7 @@ import { useServerFn } from "@tanstack/react-start";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "./status-badge";
 import { cn } from "@/lib/utils";
+import { supabase } from "@/integrations/supabase/client";
 import {
   ACTIVE_STATUSES, deleteJob, downloadReport,
   type Job,
