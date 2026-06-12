@@ -633,6 +633,13 @@ export type Database = {
         }
         Relationships: [
           {
+            foreignKeyName: "turnitin_slot_usage_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "jobs"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "turnitin_slot_usage_slot_id_fkey"
             columns: ["slot_id"]
             isOneToOne: false
