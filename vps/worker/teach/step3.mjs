@@ -92,7 +92,7 @@ console.log(JSON.stringify({
   session: SESSION,
   url: p.url(),
   title: await p.title(),
-  classCount,
+  submitUrl: SUBMIT_URL,
   elements,
 }, null, 2));
 
