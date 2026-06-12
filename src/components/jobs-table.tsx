@@ -124,6 +124,9 @@ export function JobsTable({
                   </td>
                   {showUser && <td className="px-4 py-3 text-muted-foreground">{j.user?.email ?? "—"}</td>}
                   <td className="px-4 py-3"><StatusBadge status={j.status} /></td>
+                  <td className="px-4 py-3 text-muted-foreground whitespace-nowrap text-xs">
+                    {slotMap[j.id] ?? <span className="text-muted-foreground/60">—</span>}
+                  </td>
                   <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">
                     {formatDistanceToNow(new Date(j.created_at), { addSuffix: true })}
                   </td>
