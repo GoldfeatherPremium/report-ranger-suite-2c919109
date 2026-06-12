@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
 import { Download, RotateCw, X, Trash2, FileText } from "lucide-react";
 import { toast } from "sonner";
@@ -6,6 +7,7 @@ import { useServerFn } from "@tanstack/react-start";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "./status-badge";
 import { cn } from "@/lib/utils";
+import { supabase } from "@/integrations/supabase/client";
 import {
   ACTIVE_STATUSES, deleteJob, downloadReport,
   type Job,
@@ -29,6 +31,21 @@ export function JobsTable({
   const [toDelete, setToDelete] = useState<Job | null>(null);
   const retryJob = useServerFn(retryJobAction);
   const cancelJob = useServerFn(cancelJobAction);
+
+  const jobIds = jobs.map((j) => j.id).sort();
+  const { data: slotMap = {} } = useQuery({
+    queryKey: ["job-slot-labels", jobIds],
+    enabled: jobIds.length > 0,
+    queryFn: async () => {
+      const { data, error } = await supabase.rpc("list_job_slot_labels", { p_job_ids: jobIds });
+      if (error) throw error;
+      const map: Record<string, string | null> = {};
+      for (const row of (data ?? []) as Array<{ job_id: string; slot_label: string | null }>) {
+        map[row.job_id] = row.slot_label;
+      }
+      return map;
+    },
+  });
 
   async function handleDownload(j: Job, kind: "similarity" | "ai" = "similarity") {
     setPending(j.id);
@@ -79,6 +96,7 @@ export function JobsTable({
               <th className="px-4 py-3 font-medium">Document</th>
               {showUser && <th className="px-4 py-3 font-medium">User</th>}
               <th className="px-4 py-3 font-medium">Status</th>
+              <th className="px-4 py-3 font-medium">Slot</th>
               <th className="px-4 py-3 font-medium">Created</th>
               <th className="px-4 py-3 font-medium text-right">Actions</th>
             </tr>
@@ -106,6 +124,9 @@ export function JobsTable({
                   </td>
                   {showUser && <td className="px-4 py-3 text-muted-foreground">{j.user?.email ?? "—"}</td>}
                   <td className="px-4 py-3"><StatusBadge status={j.status} /></td>
+                  <td className="px-4 py-3 text-muted-foreground whitespace-nowrap text-xs">
+                    {slotMap[j.id] ?? <span className="text-muted-foreground/60">—</span>}
+                  </td>
                   <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">
                     {formatDistanceToNow(new Date(j.created_at), { addSuffix: true })}
                   </td>
