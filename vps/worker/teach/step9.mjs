@@ -112,11 +112,10 @@ async function clickSimilarity(c) {
       for (let i = 0; i < 5; i++) {
         if (target.tagName === "A" || target.tagName === "BUTTON" || target.onclick) break;
         if (target.parentElement) target = target.parentElement; else break;
-        }
-        target.scrollIntoView();
-        target.click();
-        return { ok: true, text: t, tag: target.tagName };
       }
+      target.scrollIntoView();
+      target.click();
+      return { ok: true, text: t, tag: target.tagName };
     }
     return { ok: false };
   });
