@@ -8,6 +8,7 @@ import { createClient } from "@supabase/supabase-js";
 import dotenv from "dotenv";
 import fs from "node:fs/promises";
 import path from "node:path";
+import ws from "ws";
 
 dotenv.config(); // loads ./worker/.env when run from $WD
 
@@ -18,7 +19,7 @@ const SR_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 if (!EMAIL || !PASSWORD) { console.error("Set TT_EMAIL and TT_PASSWORD"); process.exit(2); }
 if (!SUPABASE_URL || !SR_KEY) { console.error("Missing SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY in .env"); process.exit(2); }
 
-const sb = createClient(SUPABASE_URL, SR_KEY, { auth: { persistSession: false } });
+const sb = createClient(SUPABASE_URL, SR_KEY, { auth: { persistSession: false }, realtime: { transport: ws } });
 const SESSION = `teach/${new Date().toISOString().replace(/[:.]/g, "-")}`;
 let n = 0;
 
