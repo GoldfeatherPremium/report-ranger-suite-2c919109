@@ -32,6 +32,21 @@ export function JobsTable({
   const retryJob = useServerFn(retryJobAction);
   const cancelJob = useServerFn(cancelJobAction);
 
+  const jobIds = jobs.map((j) => j.id).sort();
+  const { data: slotMap = {} } = useQuery({
+    queryKey: ["job-slot-labels", jobIds],
+    enabled: jobIds.length > 0,
+    queryFn: async () => {
+      const { data, error } = await supabase.rpc("list_job_slot_labels", { p_job_ids: jobIds });
+      if (error) throw error;
+      const map: Record<string, string | null> = {};
+      for (const row of (data ?? []) as Array<{ job_id: string; slot_label: string | null }>) {
+        map[row.job_id] = row.slot_label;
+      }
+      return map;
+    },
+  });
+
   async function handleDownload(j: Job, kind: "similarity" | "ai" = "similarity") {
     setPending(j.id);
     const url = await downloadReport(j.id, kind);
