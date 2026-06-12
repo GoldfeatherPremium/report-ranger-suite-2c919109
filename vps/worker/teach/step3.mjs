@@ -62,23 +62,11 @@ await p.waitForLoadState("domcontentloaded", { timeout: 30000 }).catch(() => {})
 await p.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
 await shot(p, "home");
 
-// ── Click the class link ─────────────────────────────────────────────────────
-const classLink = p.locator(`a:has-text("${CLASS_NAME}")`).first();
-const classCount = await classLink.count();
-console.log(`[info] class link "${CLASS_NAME}" found: ${classCount}`);
-if (classCount === 0) {
-  // Fallback: list every link on the homepage so we can pick by hand.
-  const links = await p.$$eval("a", (as) =>
-    as.slice(0, 50).map((a) => ({ text: a.innerText.trim().slice(0, 80), href: a.href }))
-      .filter((x) => x.text && x.href));
-  console.log("[debug] homepage links:", JSON.stringify(links, null, 2));
-  await b.close();
-  process.exit(3);
-}
-await classLink.click({ timeout: 15000 });
-await p.waitForLoadState("domcontentloaded", { timeout: 30000 }).catch(() => {});
+// ── Navigate directly to the slot's submit_url ───────────────────────────────
+console.log(`[info] navigating to slot submit_url: ${SUBMIT_URL}`);
+await p.goto(SUBMIT_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
 await p.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
-await shot(p, "class-page");
+await shot(p, "submit-page");
 
 // ── Dump clickable elements on the class page ────────────────────────────────
 const elements = await p.evaluate(() => {
