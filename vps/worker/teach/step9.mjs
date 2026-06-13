@@ -58,64 +58,50 @@ await p.locator(SEL.password).first().fill(PASSWORD, { timeout: 15000 });
 await p.locator(SEL.submit).first().click({ timeout: 15000 });
 await p.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
 
-console.log("[info] step9 version v3-diag");
+console.log("[info] step9 version v4-orlink");
 console.log(`[info] goto ${SUBMIT_URL}`);
 await p.goto(SUBMIT_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
 await p.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
 await shot(p, "dashboard-initial");
 
-// Scan all frames (main + iframes) for a similarity %. Match on element
-// textContent (so "24" + "%" split across nodes still matches) and recurse
-// into shadow roots.
+// Selector ported from the production worker (vps/worker/src/turnitin.ts SEL.similarityCell).
+const SIM_SEL = [
+  '.or-link',
+  '[data-similarity]',
+  '.similarity-score',
+  'a[href*="viewer"]',
+  'a[href*="ev.turnitin"]',
+  'a:has-text("%")',
+  'div[class*="similarity" i]',
+].join(", ");
+
 async function scanForSimilarity() {
   const contexts = [p, ...p.frames()];
   for (const c of contexts) {
     try {
-      const res = await c.evaluate(() => {
-        const pctRe = /^\s*(\d{1,3})\s*%\s*$/;
-        const hits = [];
-        const visit = (root) => {
-          const els = root.querySelectorAll("*");
-          for (const el of els) {
-            if (el.shadowRoot) visit(el.shadowRoot);
-            const t = (el.textContent || "").trim();
-            const m = t.match(pctRe);
-            if (!m) continue;
-            const n = parseInt(m[1], 10);
-            if (n < 0 || n > 100) continue;
-            const r = el.getBoundingClientRect();
-            if (r.width === 0 && r.height === 0) continue;
-            // keep only the innermost matching element
-            let inner = false;
-            for (const ch of el.querySelectorAll("*")) {
-              if (pctRe.test((ch.textContent || "").trim())) { inner = true; break; }
-            }
-            if (inner) continue;
-            hits.push({ pct: n, tag: el.tagName, text: t.slice(0, 40), cls: el.className?.toString?.().slice(0, 60) || "" });
-          }
-        };
-        visit(document);
-        return { url: location.href, hits };
-      });
-      if (res.hits && res.hits.length) return { ctx: c, ...res };
-    } catch {}
-  }
-  // Diagnostic: dump every short text containing "%" so we can see what's on the page.
-  for (const c of contexts) {
-    try {
-      const diag = await c.evaluate(() => {
-        const out = [];
-        for (const el of document.querySelectorAll("*")) {
-          if (el.children.length) continue;
-          const t = (el.textContent || "").trim();
-          if (t.includes("%") && t.length <= 30) out.push({ tag: el.tagName, text: t });
+      const loc = c.locator(SIM_SEL).first();
+      const count = await c.locator(SIM_SEL).count().catch(() => 0);
+      if (!count) continue;
+      const text = await loc.innerText({ timeout: 3000 }).catch(() => "");
+      const m = text.match(/(\d{1,3})\s*%/);
+      if (m) {
+        const pct = parseInt(m[1], 10);
+        if (pct >= 0 && pct <= 100) {
+          return { ctx: c, hits: [{ pct, text: text.trim().slice(0, 60) }] };
         }
-        return { url: location.href, pctTexts: out.slice(0, 20), frames: document.querySelectorAll("iframe").length };
-      });
-      console.log("[diag-scan]", JSON.stringify(diag));
+      }
+      console.log(`[diag-sel] frame=${c.url?.() ?? "main"} count=${count} text="${text.trim().slice(0,80)}"`);
     } catch {}
   }
   return null;
+}
+
+async function clickSimilarity(c) {
+  const loc = c.locator(SIM_SEL).first();
+  await loc.scrollIntoViewIfNeeded({ timeout: 5000 }).catch(() => {});
+  const text = await loc.innerText({ timeout: 3000 }).catch(() => "");
+  await loc.click({ timeout: 10000 });
+  return { ok: true, text: text.trim() };
 }
 
 async function clickSimilarity(c) {
