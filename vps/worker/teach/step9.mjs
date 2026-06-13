@@ -104,40 +104,6 @@ async function clickSimilarity(c) {
   return { ok: true, text: text.trim() };
 }
 
-async function clickSimilarity(c) {
-  return await c.evaluate(() => {
-    const pctRe = /^\s*(\d{1,3})\s*%\s*$/;
-    let match = null;
-    const visit = (root) => {
-      for (const el of root.querySelectorAll("*")) {
-        if (match) return;
-        if (el.shadowRoot) visit(el.shadowRoot);
-        const t = (el.textContent || "").trim();
-        if (!pctRe.test(t)) continue;
-        const r = el.getBoundingClientRect();
-        if (r.width === 0 && r.height === 0) continue;
-        let inner = false;
-        for (const ch of el.querySelectorAll("*")) {
-          if (pctRe.test((ch.textContent || "").trim())) { inner = true; break; }
-        }
-        if (inner) continue;
-        match = el;
-      }
-    };
-    visit(document);
-    if (!match) return { ok: false };
-    const text = (match.textContent || "").trim();
-    // Walk up to find a clickable ancestor (A/BUTTON/onclick), max 5 hops.
-    let target = match;
-    for (let i = 0; i < 5; i++) {
-      if (target.tagName === "A" || target.tagName === "BUTTON" || target.onclick) break;
-      if (target.parentElement) target = target.parentElement; else break;
-    }
-    target.scrollIntoView();
-    target.click();
-    return { ok: true, text, tag: target.tagName };
-  });
-}
 
 const startedAt = Date.now();
 const MAX_MS = 20 * 60_000;
